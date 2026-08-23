@@ -1131,6 +1131,115 @@ else
   fail "skill frontmatter marker helpers"
 fi
 
+echo "=== frontmatter block scalars keep valid outcomes ==="
+if python3 - "$REPO_ROOT" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
+from workflow_resolve import classify_skill_marker, extract_skill_frontmatter
+
+literal = """---
+name: block-review
+description: |
+  Use when a human asks for a structured review
+  that spans more than one line.
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - skip
+---
+FOREIGN_BODY
+"""
+fm = extract_skill_frontmatter(literal)
+assert fm is not None, "literal block description must parse"
+assert fm["name"] == "block-review"
+assert "structured review" in fm["description"]
+status, outcomes = classify_skill_marker(fm)
+assert status == "ok", status
+assert outcomes == ["approved", "skip"]
+
+folded = """---
+name: folded-review
+description: >-
+  Use when a human asks for a structured review
+  that spans more than one line.
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+---
+FOREIGN_BODY
+"""
+fm = extract_skill_frontmatter(folded)
+assert fm is not None, "folded description must parse"
+assert fm["name"] == "folded-review"
+status, outcomes = classify_skill_marker(fm)
+assert status == "ok", status
+assert outcomes == ["approved"]
+print("ok")
+PY
+then
+  pass "frontmatter block scalars keep valid outcomes"
+else
+  fail "frontmatter block scalars keep valid outcomes"
+fi
+
+echo "=== unreadable frontmatter with supersuit pocket warns ==="
+if python3 - "$REPO_ROOT" "$TEST_ROOT" <<'PY'
+import io
+import sys
+from contextlib import redirect_stderr
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
+from workflow_resolve import discover_skill_catalog
+
+base = Path(sys.argv[2]) / "frontmatter-parse"
+plugin = base / "plugin"
+project = base / "proj"
+home = base / "home"
+pack = base / "pack"
+(plugin / "skills").mkdir(parents=True)
+project.mkdir(parents=True)
+home.mkdir(parents=True)
+
+broken = pack / "broken-tab"
+broken.mkdir(parents=True)
+(broken / "SKILL.md").write_text(
+    "---\nname: broken-tab\ndescription: x\nmetadata:\n\tsupersuit:\n"
+    "    outcomes:\n      - approved\n---\nbody\n",
+    encoding="utf-8",
+)
+plain_broken = pack / "plain-broken"
+plain_broken.mkdir(parents=True)
+(plain_broken / "SKILL.md").write_text(
+    "---\nname: plain-broken\ndescription: \"unclosed\n---\nbody\n",
+    encoding="utf-8",
+)
+
+err = io.StringIO()
+with redirect_stderr(err):
+    catalog = discover_skill_catalog(
+        plugin_root=plugin,
+        project_root=project,
+        user_home=home,
+        environ={"SUPERSUIT_SKILL_PATH": str(pack)},
+    )
+stderr = err.getvalue()
+assert "broken-tab" not in catalog
+assert "plain-broken" not in catalog
+assert "invalid metadata.supersuit.outcomes" in stderr
+assert "broken-tab" in stderr
+assert "plain-broken" not in stderr
+print("ok")
+PY
+then
+  pass "unreadable frontmatter with supersuit pocket warns"
+else
+  fail "unreadable frontmatter with supersuit pocket warns"
+fi
+
 echo "=== skill catalog discovery order ==="
 if python3 - "$REPO_ROOT" "$TEST_ROOT" <<'PY'
 import os
@@ -1301,6 +1410,40 @@ assert "run" not in d["skills"]["brainstorming"]
   pass "resolve catalogs opted-in skills"
 else
   fail "resolve catalogs opted-in skills"
+fi
+
+echo "=== resolve catalogs skill with multiline description ==="
+ML_PROJ="$TEST_ROOT/multiline-proj"
+ML_HOME="$TEST_ROOT/multiline-home"
+ML_PACK="$TEST_ROOT/multiline-pack"
+mkdir -p "$ML_PROJ" "$ML_HOME" "$ML_PACK/block-review"
+cat > "$ML_PACK/block-review/SKILL.md" <<'EOF'
+---
+name: block-review
+description: |
+  Use when a human asks for a structured review
+  that spans more than one line.
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - changes-requested
+---
+MULTILINE_FOREIGN_BODY
+EOF
+if OUT="$(cd "$ML_PROJ" && SUPERSUIT_SKILL_PATH="$ML_PACK" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$ML_PROJ" --user-home "$ML_HOME")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+e=d["skills"]["block-review"]
+assert e["outcomes"]==["approved","changes-requested"]
+assert e["path"].endswith("block-review")
+'; then
+  pass "resolve catalogs skill with multiline description"
+else
+  fail "resolve catalogs skill with multiline description"
 fi
 
 echo "=== invalid marker warns and resolve continues ==="

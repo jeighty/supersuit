@@ -381,3 +381,238 @@ def _needs_quotes(text: str) -> bool:
     if set(text) & {":", "{", "}", "[", "]", ",", "#", "&", "*", "!", "|", ">", "'", '"', "%", "@", "`"}:
         return True
     return False
+
+
+_BLOCK_HEADER = re.compile(r"^([|>])([+-]?)(\d*)$")
+
+
+def load_frontmatter_yaml(text: str) -> Any:
+    """Parse SKILL.md frontmatter, including ``|`` / ``>`` block scalars.
+
+    Broader than :func:`load_yaml` (workflow subset). Still no tags, anchors,
+    merge keys, or flow collections beyond ``{}`` / ``[]``.
+    """
+    lines = [(line_no, raw.rstrip("\r")) for line_no, raw in enumerate(text.splitlines())]
+    if not lines:
+        return None
+    value, index = _fm_parse_node(lines, 0, 0)
+    index = _fm_skip_blank(lines, index)
+    if index < len(lines):
+        raise YAMLError(f"unexpected content at line {lines[index][0] + 1}")
+    return value
+
+
+def _fm_indent(line: str) -> int:
+    count = 0
+    for char in line:
+        if char == " ":
+            count += 1
+        else:
+            break
+    if count < len(line) and line[count] == "\t":
+        raise YAMLError("tabs are not allowed for indentation")
+    return count
+
+
+def _fm_struct(line: str) -> str:
+    return _remove_comment(line).rstrip()
+
+
+def _fm_skip_blank(lines: list[tuple[int, str]], index: int) -> int:
+    while index < len(lines):
+        structured = _fm_struct(lines[index][1])
+        if structured.strip():
+            break
+        index += 1
+    return index
+
+
+def _fm_parse_node(
+    lines: list[tuple[int, str]], index: int, indent: int
+) -> tuple[Any, int]:
+    index = _fm_skip_blank(lines, index)
+    if index >= len(lines):
+        return None, index
+    structured = _fm_struct(lines[index][1])
+    current_indent = _fm_indent(structured)
+    if current_indent < indent:
+        return None, index
+    if current_indent > indent:
+        raise YAMLError(f"unexpected indent at line {lines[index][0] + 1}")
+    content = structured[current_indent:].strip()
+    if content.startswith("- ") or content == "-":
+        return _fm_parse_sequence(lines, index, indent)
+    if ":" in content:
+        return _fm_parse_mapping(lines, index, indent)
+    raise YAMLError(f"expected mapping or sequence at line {lines[index][0] + 1}")
+
+
+def _fm_parse_mapping(
+    lines: list[tuple[int, str]], index: int, indent: int
+) -> tuple[dict[str, Any], int]:
+    mapping: dict[str, Any] = {}
+    while index < len(lines):
+        index = _fm_skip_blank(lines, index)
+        if index >= len(lines):
+            break
+        line_no, raw = lines[index]
+        structured = _fm_struct(raw)
+        current_indent = _fm_indent(structured)
+        if current_indent < indent or current_indent > indent:
+            break
+        content = structured[current_indent:].strip()
+        if not content or content.startswith("- "):
+            break
+        key, separator, remainder = content.partition(":")
+        if not separator:
+            raise YAMLError(f"expected ':' after key at line {line_no + 1}")
+        key = key.strip()
+        if not key:
+            raise YAMLError(f"empty mapping key at line {line_no + 1}")
+        remainder = remainder.strip()
+        if remainder == "":
+            index += 1
+            index = _fm_skip_blank(lines, index)
+            if index >= len(lines) or _fm_indent(_fm_struct(lines[index][1])) <= indent:
+                mapping[key] = None
+                continue
+            next_content = _fm_struct(lines[index][1]).strip()
+            if next_content.startswith("- ") or next_content == "-":
+                value, index = _fm_parse_sequence(lines, index, indent + 2)
+            else:
+                value, index = _fm_parse_mapping(lines, index, indent + 2)
+            mapping[key] = value
+            continue
+        if remainder == "{}":
+            mapping[key] = {}
+            index += 1
+            continue
+        if remainder == "[]":
+            mapping[key] = []
+            index += 1
+            continue
+        block = _BLOCK_HEADER.match(remainder)
+        if block:
+            value, index = _fm_parse_block_scalar(
+                lines, index + 1, indent, block.group(1), block.group(2), block.group(3)
+            )
+            mapping[key] = value
+            continue
+        mapping[key] = _parse_scalar(remainder)
+        index += 1
+    return mapping, index
+
+
+def _fm_parse_sequence(
+    lines: list[tuple[int, str]], index: int, indent: int
+) -> tuple[list[Any], int]:
+    sequence: list[Any] = []
+    line_no = lines[index][0] if index < len(lines) else 0
+    while index < len(lines):
+        index = _fm_skip_blank(lines, index)
+        if index >= len(lines):
+            break
+        line_no, raw = lines[index]
+        structured = _fm_struct(raw)
+        current_indent = _fm_indent(structured)
+        if current_indent < indent:
+            break
+        content = structured[current_indent:].strip()
+        if not content.startswith("-") or (
+            content != "-" and not content.startswith("- ")
+        ):
+            break
+        if current_indent != indent:
+            break
+        item_text = content[1:].strip()
+        if item_text == "":
+            index += 1
+            index = _fm_skip_blank(lines, index)
+            if index >= len(lines) or _fm_indent(_fm_struct(lines[index][1])) <= indent:
+                sequence.append(None)
+                continue
+            next_content = _fm_struct(lines[index][1]).strip()
+            if next_content.startswith("- "):
+                value, index = _fm_parse_sequence(lines, index, indent + 2)
+            else:
+                value, index = _fm_parse_mapping(lines, index, indent + 2)
+            sequence.append(value)
+            continue
+        sequence.append(_parse_scalar(item_text))
+        index += 1
+    if not sequence:
+        raise YAMLError(f"expected sequence item at line {line_no + 1}")
+    return sequence, index
+
+
+def _fm_parse_block_scalar(
+    lines: list[tuple[int, str]],
+    index: int,
+    key_indent: int,
+    style: str,
+    chomp: str,
+    digits: str,
+) -> tuple[str, int]:
+    explicit = int(digits) if digits else None
+    content_indent: int | None = key_indent + explicit if explicit is not None else None
+    collected: list[str] = []
+    while index < len(lines):
+        raw = lines[index][1]
+        if not raw.strip():
+            collected.append("")
+            index += 1
+            continue
+        indent = 0
+        while indent < len(raw) and raw[indent] == " ":
+            indent += 1
+        if indent < len(raw) and raw[indent] == "\t" and (
+            content_indent is None or indent < content_indent
+        ):
+            raise YAMLError("tabs are not allowed for indentation")
+        if indent <= key_indent:
+            break
+        if content_indent is None:
+            content_indent = indent
+        if indent < content_indent:
+            break
+        collected.append(raw[content_indent:])
+        index += 1
+
+    while collected and collected[0] == "" and any(item != "" for item in collected):
+        collected.pop(0)
+
+    trailing = 0
+    while trailing < len(collected) and collected[-(trailing + 1)] == "":
+        trailing += 1
+    body = collected[: len(collected) - trailing] if trailing else collected
+
+    if style == "|":
+        text = "\n".join(body)
+    else:
+        text = _fm_fold_block(body)
+
+    if chomp == "-":
+        return text.rstrip("\n"), index
+    if chomp == "+":
+        extra = "\n" * trailing
+        if body:
+            return text + "\n" + extra, index
+        return extra, index
+    if body:
+        return text.rstrip("\n") + "\n", index
+    return "", index
+
+
+def _fm_fold_block(body: list[str]) -> str:
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for item in body:
+        if item == "":
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+        else:
+            current.append(item)
+    if current:
+        paragraphs.append(" ".join(current))
+    return "\n\n".join(paragraphs)

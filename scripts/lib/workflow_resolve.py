@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from workflow_yaml import YAMLError, load_yaml
+from workflow_yaml import YAMLError, load_frontmatter_yaml, load_yaml
 
 ALLOWED_RUN_ROOTS = frozenset({"plugin", "project"})
 DEFAULT_RUN_OUTCOMES: dict[str, str] = {"0": "complete", "nonzero": "failed"}
@@ -28,6 +29,10 @@ KNOWN_CAPABILITIES = frozenset(
 
 class WorkflowResolveError(Exception):
     """Raised when workflow configuration cannot be resolved."""
+
+
+class FrontmatterParseError(Exception):
+    """Raised when SKILL.md YAML frontmatter cannot be parsed."""
 
 
 def parse_capabilities(value: str | list[str] | None) -> list[str]:
@@ -223,8 +228,8 @@ def discover_known_skills(plugin_root: Path) -> list[str]:
     )
 
 
-def extract_skill_frontmatter(text: str) -> dict[str, Any] | None:
-    """Return the first YAML frontmatter mapping (first --- ... ---), or None."""
+def frontmatter_block(text: str) -> str | None:
+    """Return the first YAML frontmatter block (first --- ... ---), or None."""
     if text.startswith("\ufeff"):
         text = text[1:]
     if not text.startswith("---"):
@@ -239,10 +244,31 @@ def extract_skill_frontmatter(text: str) -> dict[str, Any] | None:
     closer = rest.find("\n---")
     if closer < 0:
         return None
-    try:
-        doc = load_yaml(rest[:closer])
-    except YAMLError:
+    return rest[:closer]
+
+
+def looks_like_supersuit_pocket(block: str) -> bool:
+    """True when raw frontmatter looks like it declared metadata.supersuit."""
+    return bool(
+        re.search(r"(?m)^metadata:\s*$", block)
+        and re.search(r"(?m)^[ \t]*supersuit:", block)
+    )
+
+
+def extract_skill_frontmatter(text: str) -> dict[str, Any] | None:
+    """Return the first YAML frontmatter mapping (first --- ... ---), or None.
+
+    Uses a frontmatter YAML reader that accepts block scalars (``|``, ``>-``).
+    Unparseable YAML raises :class:`FrontmatterParseError` so callers can warn
+    when a ``metadata.supersuit`` pocket is visible instead of silent-skip.
+    """
+    block = frontmatter_block(text)
+    if block is None:
         return None
+    try:
+        doc = load_frontmatter_yaml(block)
+    except YAMLError as exc:
+        raise FrontmatterParseError(str(exc)) from exc
     return doc if isinstance(doc, dict) else None
 
 
@@ -374,7 +400,17 @@ def discover_skill_catalog(
                     file=sys.stderr,
                 )
                 continue
-            frontmatter = extract_skill_frontmatter(text)
+            try:
+                frontmatter = extract_skill_frontmatter(text)
+            except FrontmatterParseError:
+                block = frontmatter_block(text) or ""
+                if looks_like_supersuit_pocket(block):
+                    print(
+                        "warning: skipping SKILL.md with invalid "
+                        f"metadata.supersuit.outcomes: {skill_md}",
+                        file=sys.stderr,
+                    )
+                continue
             status, outcomes = classify_skill_marker(frontmatter)
             if status == "absent":
                 continue
@@ -932,8 +968,18 @@ def outcomes_from_skill_dir(skill_dir: Path) -> list[str] | None:
     if not is_regular_skill_md(skill_md):
         return None
     try:
-        frontmatter = extract_skill_frontmatter(skill_md.read_text(encoding="utf-8"))
+        text = skill_md.read_text(encoding="utf-8")
     except OSError:
+        return None
+    try:
+        frontmatter = extract_skill_frontmatter(text)
+    except FrontmatterParseError:
+        if looks_like_supersuit_pocket(frontmatter_block(text) or ""):
+            print(
+                "warning: skipping SKILL.md with invalid "
+                f"metadata.supersuit.outcomes: {skill_md}",
+                file=sys.stderr,
+            )
         return None
     status, outcomes = classify_skill_marker(frontmatter)
     if status == "invalid":
