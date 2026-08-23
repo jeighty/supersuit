@@ -1,7 +1,7 @@
 {
   "name": "supersuit",
-  "version": "6.3.0",
-  "description": "Supersuit \u2014 a framework for building your own Superpowers-based workflow and skill toolchain (methodology by Jesse Vincent / obra / Prime Radiant). Not a Superpowers replacement; defaults match until you customize.",
+  "version": "0.1.0-dev",
+  "description": "Supersuit — a framework for building your own Superpowers-based workflow and skill toolchain (methodology by Jesse Vincent / obra / Prime Radiant). Not a Superpowers replacement; defaults match until you customize.",
   "author": {
     "name": "James Thomason Jr.",
     "email": "github@jamesthomasonjr.com",
@@ -25,7 +25,7 @@
   "interface": {
     "displayName": "Supersuit",
     "shortDescription": "Framework for custom Superpowers-based agent workflows",
-    "longDescription": "Supersuit \u2014 a framework for building your own Superpowers-based workflow and skill toolchain (methodology by Jesse Vincent / obra / Prime Radiant). Not a Superpowers replacement; defaults match until you customize. Do not enable alongside upstream Superpowers.",
+    "longDescription": "Supersuit — a framework for building your own Superpowers-based workflow and skill toolchain (methodology by Jesse Vincent / obra / Prime Radiant). Not a Superpowers replacement; defaults match until you customize. Do not enable alongside upstream Superpowers.",
     "developerName": "James Thomason Jr.",
     "category": "Developer Tools",
     "capabilities": [
