@@ -1067,6 +1067,70 @@ else
   fi
 fi
 
+echo "=== skill frontmatter marker helpers ==="
+if python3 - "$REPO_ROOT" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
+from workflow_resolve import (
+    classify_skill_marker,
+    extract_skill_frontmatter,
+    skill_logical_id,
+)
+
+text = """---
+name: my-review
+description: Use when a human asks for a structured review.
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - changes-requested
+      - approved
+      - skip
+---
+
+# Body that must not be parsed
+to: writing-plans
+"""
+fm = extract_skill_frontmatter(text)
+assert fm["name"] == "my-review"
+assert "Body" not in str(fm)
+status, outcomes = classify_skill_marker(fm)
+assert status == "ok"
+assert outcomes == ["approved", "changes-requested", "skip"]
+assert skill_logical_id(fm, Path("/tmp/review-changes")) == "my-review"
+
+plain = extract_skill_frontmatter("---\nname: plain\n---\n")
+assert classify_skill_marker(plain) == ("absent", None)
+assert skill_logical_id(plain, Path("/tmp/plain")) == "plain"
+assert skill_logical_id({"name": "  "}, Path("/tmp/dir-id")) == "dir-id"
+
+empty_list = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    outcomes: []\n---\n"
+)
+assert classify_skill_marker(empty_list)[0] == "invalid"
+
+not_map = extract_skill_frontmatter("---\nmetadata:\n  supersuit: yes\n---\n")
+assert classify_skill_marker(not_map)[0] == "invalid"
+
+missing_outcomes = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    extra: 1\n---\n"
+)
+assert classify_skill_marker(missing_outcomes)[0] == "invalid"
+
+blank = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    outcomes:\n      - ok\n      - ''\n---\n"
+)
+assert classify_skill_marker(blank)[0] == "invalid"
+print("ok")
+PY
+then
+  pass "skill frontmatter marker helpers"
+else
+  fail "skill frontmatter marker helpers"
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAILED: $FAILURES"
   exit 1

@@ -222,6 +222,66 @@ def discover_known_skills(plugin_root: Path) -> list[str]:
     )
 
 
+def extract_skill_frontmatter(text: str) -> dict[str, Any] | None:
+    """Return the first YAML frontmatter mapping (first --- ... ---), or None."""
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    if not text.startswith("---"):
+        return None
+    rest = text[3:]
+    if rest.startswith("\r\n"):
+        rest = rest[2:]
+    elif rest.startswith("\n"):
+        rest = rest[1:]
+    else:
+        return None
+    closer = rest.find("\n---")
+    if closer < 0:
+        return None
+    try:
+        doc = load_yaml(rest[:closer])
+    except YAMLError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def classify_skill_marker(
+    frontmatter: dict[str, Any] | None,
+) -> tuple[str, list[str] | None]:
+    """Classify metadata.supersuit.outcomes: absent, invalid, or ok."""
+    if not isinstance(frontmatter, dict):
+        return "absent", None
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict) or "supersuit" not in metadata:
+        return "absent", None
+    supersuit = metadata.get("supersuit")
+    if not isinstance(supersuit, dict):
+        return "invalid", None
+    if "outcomes" not in supersuit:
+        return "invalid", None
+    raw = supersuit.get("outcomes")
+    if not isinstance(raw, list) or not raw:
+        return "invalid", None
+    outcomes: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            return "invalid", None
+        if item not in outcomes:
+            outcomes.append(item)
+    if not outcomes:
+        return "invalid", None
+    return "ok", outcomes
+
+
+def skill_logical_id(
+    frontmatter: dict[str, Any] | None, skill_dir: Path
+) -> str:
+    name = frontmatter.get("name") if isinstance(frontmatter, dict) else None
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return skill_dir.name
+
+
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 KNOWN_SKILLS: list[str] = discover_known_skills(_PLUGIN_ROOT)
 
