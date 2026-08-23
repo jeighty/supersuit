@@ -1288,6 +1288,173 @@ else
   fail "resolve catalogs opted-in skills"
 fi
 
+echo "=== invalid marker warns and resolve continues ==="
+BAD="$TEST_ROOT/invalid-marker-proj"
+BAD_HOME="$TEST_ROOT/invalid-marker-home"
+mkdir -p "$BAD/.claude/skills/broken" "$BAD_HOME"
+cat > "$BAD/.claude/skills/broken/SKILL.md" <<'EOF'
+---
+name: broken
+metadata:
+  supersuit:
+    outcomes: []
+---
+broken body
+EOF
+set +e
+OUT="$(cd "$BAD" && "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$BAD" --user-home "$BAD_HOME" 2>"$TEST_ROOT/invalid-marker.err")"
+status=$?
+set -e
+if [[ "$status" -eq 0 ]] &&
+  echo "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["version"]==1; assert "broken" not in d["skills"]' &&
+  grep -qi 'invalid metadata.supersuit.outcomes' "$TEST_ROOT/invalid-marker.err"; then
+  pass "invalid marker warns and resolve continues"
+else
+  fail "invalid marker warns and resolve continues"
+  echo "$OUT" | sed 's/^/    /'
+  sed 's/^/    /' "$TEST_ROOT/invalid-marker.err"
+fi
+
+echo "=== overlay skill alias attaches cataloged outcomes ==="
+ALIAS_PROJ="$TEST_ROOT/alias-proj"
+ALIAS_HOME="$TEST_ROOT/alias-home"
+ALIAS_PACK="$TEST_ROOT/alias-pack"
+mkdir -p "$ALIAS_PROJ/.supersuit" "$ALIAS_HOME" \
+  "$ALIAS_PACK/other-name" "$ALIAS_PACK/bare-alias"
+cat > "$ALIAS_PACK/other-name/SKILL.md" <<'EOF'
+---
+name: other-name
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - skip
+---
+aliased body
+EOF
+cat > "$ALIAS_PACK/bare-alias/SKILL.md" <<'EOF'
+---
+name: bare-alias
+---
+no marker
+EOF
+cat > "$ALIAS_PROJ/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+skills:
+  review:
+    skill: other-name
+  missing-alias:
+    skill: not-cataloged
+  bare:
+    skill: bare-alias
+EOF
+if OUT="$(cd "$ALIAS_PROJ" && SUPERSUIT_SKILL_PATH="$ALIAS_PACK" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$ALIAS_PROJ" --user-home "$ALIAS_HOME")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+assert d["skills"]["review"]["skill"]=="other-name"
+assert d["skills"]["review"]["outcomes"]==["approved","skip"]
+assert "outcomes" not in d["skills"]["missing-alias"]
+assert "outcomes" not in d["skills"]["bare"]
+'; then
+  pass "overlay skill alias attaches cataloged outcomes"
+else
+  fail "overlay skill alias attaches cataloged outcomes"
+fi
+
+echo "=== overlay path wins for outcomes SKILL.md ==="
+PATH_PROJ="$TEST_ROOT/path-win-proj"
+PATH_HOME="$TEST_ROOT/path-win-home"
+PATH_PACK="$TEST_ROOT/path-win-pack"
+PATH_CUSTOM="$TEST_ROOT/path-win-custom/custom-review"
+mkdir -p "$PATH_PROJ/.supersuit" "$PATH_HOME" "$PATH_PACK/my-review" "$PATH_CUSTOM"
+cat > "$PATH_PACK/my-review/SKILL.md" <<'EOF'
+---
+name: my-review
+metadata:
+  supersuit:
+    outcomes:
+      - first-seen
+---
+pack body
+EOF
+cat > "$PATH_CUSTOM/SKILL.md" <<'EOF'
+---
+name: my-review
+metadata:
+  supersuit:
+    outcomes:
+      - from-path
+---
+custom body
+EOF
+cat > "$PATH_PROJ/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+skills:
+  my-review:
+    path: ../path-win-custom/custom-review
+EOF
+if OUT="$(cd "$PATH_PROJ" && SUPERSUIT_SKILL_PATH="$PATH_PACK" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$PATH_PROJ" --user-home "$PATH_HOME")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+assert d["skills"]["my-review"]["outcomes"]==["from-path"]
+assert "first-seen" not in d["skills"]["my-review"]["outcomes"]
+'; then
+  pass "overlay path wins for outcomes SKILL.md"
+else
+  fail "overlay path wins for outcomes SKILL.md"
+fi
+
+echo "=== run entries do not get skill-frontmatter outcomes ==="
+mkdir -p "$PROJ/scripts" "$PROJ/.supersuit"
+cat > "$PROJ/scripts/ensure-fixture.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$PROJ/scripts/ensure-fixture.sh"
+mkdir -p "$TEST_ROOT/run-pack/ensure-fixture"
+cat > "$TEST_ROOT/run-pack/ensure-fixture/SKILL.md" <<'EOF'
+---
+name: ensure-fixture
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+---
+should not attach
+EOF
+cat > "$PROJ/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+skills:
+  ensure-fixture:
+    run:
+      argv:
+        - scripts/ensure-fixture.sh
+      allow:
+        - project
+EOF
+if OUT="$(cd "$PROJ" && SUPERSUIT_SKILL_PATH="$TEST_ROOT/run-pack" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$PROJ" --user-home "$TEST_HOME")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+e=d["skills"]["ensure-fixture"]
+assert "run" in e
+assert e.get("outcomes") != ["approved"]
+assert e["run"]["outcomes"]["0"]=="complete"
+'; then
+  pass "run entries do not get skill-frontmatter outcomes"
+else
+  fail "run entries do not get skill-frontmatter outcomes"
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAILED: $FAILURES"
   exit 1

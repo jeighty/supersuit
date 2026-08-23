@@ -308,6 +308,33 @@ else
     echo "$output" | sed 's/^/      /'
 fi
 
+echo "SessionStart does not inject cataloged foreign skill bodies"
+
+foreign_proj="$TEST_ROOT/foreign-catalog-proj"
+foreign_pack="$TEST_ROOT/foreign-catalog-pack/unique-review"
+mkdir -p "$foreign_proj" "$foreign_pack"
+cat > "$foreign_pack/SKILL.md" <<'EOF'
+---
+name: unique-review
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+---
+UNIQUE_FOREIGN_SKILL_BODY_TOKEN
+EOF
+foreign_home="$(make_home foreign-catalog)"
+assert_command_output \
+    "SessionStart catalog JSON has outcomes but not the foreign SKILL.md body" \
+    "cursor" \
+    "WORKFLOW_MAP"$'\037'"unique-review"$'\037'"\"outcomes\": [\"approved\"]" \
+    "UNIQUE_FOREIGN_SKILL_BODY_TOKEN" \
+    "$foreign_home" \
+    CURSOR_PLUGIN_ROOT="$REPO_ROOT" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
+    SUPERSUIT_SKILL_PATH="$(dirname "$foreign_pack")" \
+    bash -c "cd \"$foreign_proj\" && bash \"$HOOK_UNDER_TEST\""
+
 echo "SessionStart total resolve failure warning"
 
 broken_plugin="$TEST_ROOT/broken-plugin"
