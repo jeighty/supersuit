@@ -1131,6 +1131,80 @@ else
   fail "skill frontmatter marker helpers"
 fi
 
+echo "=== skill catalog discovery order ==="
+if python3 - "$REPO_ROOT" "$TEST_ROOT" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
+from workflow_resolve import discover_skill_catalog
+
+base = Path(sys.argv[2]) / "catalog-disc"
+plugin = base / "plugin"
+project = base / "proj"
+home = base / "home"
+pack_a = base / "pack-a"
+pack_b = base / "pack-b"
+proj_skills = project / "skills" / "shadowed"
+dot_supersuit = project / ".supersuit" / "skills" / "leaked"
+
+def write_skill(root, dirname, name, outcomes, body="BODY"):
+    skill_dir = root / dirname
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["---", f"name: {name}", "metadata:", "  supersuit:", "    outcomes:"]
+    for item in outcomes:
+        lines.append(f"      - {item}")
+    lines.extend(["---", "", body, ""])
+    (skill_dir / "SKILL.md").write_text("\n".join(lines), encoding="utf-8")
+    return skill_dir
+
+(plugin / "skills").mkdir(parents=True)
+write_skill(plugin / "skills", "bundled-marked", "bundled-marked", ["done"])
+write_skill(pack_a, "review-changes", "my-review", ["approved", "skip"], body="FOREIGN_BODY_PACK_A")
+write_skill(pack_b, "review-changes", "my-review", ["later"], body="FOREIGN_BODY_PACK_B")
+write_skill(project / ".agents" / "skills", "agents-skill", "agents-skill", ["from-agents"])
+write_skill(project / ".opencode" / "skills", "oc-skill", "oc-skill", ["from-oc"])
+write_skill(home / ".agents" / "skills", "user-agents", "user-agents", ["from-user"])
+write_skill(proj_skills.parent, "shadowed", "shadowed", ["from-project-skills"])
+write_skill(dot_supersuit.parent, "leaked", "leaked", ["from-dot-supersuit"])
+plain = project / ".claude" / "skills" / "plain"
+plain.mkdir(parents=True)
+(plain / "SKILL.md").write_text("---\nname: plain\n---\n# no marker\n", encoding="utf-8")
+
+catalog = discover_skill_catalog(
+    plugin_root=plugin,
+    project_root=project,
+    user_home=home,
+    environ={
+        "SUPERSUIT_SKILL_PATH": os.pathsep.join([str(pack_a), str(pack_b)]),
+    },
+)
+assert "bundled-marked" in catalog
+assert catalog["my-review"]["outcomes"] == ["approved", "skip"]
+assert Path(catalog["my-review"]["path"]) == pack_a / "review-changes"
+assert "agents-skill" in catalog
+assert "oc-skill" in catalog
+assert "user-agents" in catalog
+assert "plain" not in catalog
+assert "shadowed" not in catalog
+assert "leaked" not in catalog
+
+listed = discover_skill_catalog(
+    plugin_root=plugin,
+    project_root=project,
+    user_home=home,
+    environ={"SUPERSUIT_SKILL_PATH": str(project / "skills")},
+)
+assert listed["shadowed"]["outcomes"] == ["from-project-skills"]
+print("ok")
+PY
+then
+  pass "skill catalog discovery order"
+else
+  fail "skill catalog discovery order"
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAILED: $FAILURES"
   exit 1

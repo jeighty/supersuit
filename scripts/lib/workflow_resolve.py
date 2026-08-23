@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -280,6 +281,118 @@ def skill_logical_id(
     if isinstance(name, str) and name.strip():
         return name.strip()
     return skill_dir.name
+
+
+def is_regular_skill_md(path: Path) -> bool:
+    """True for a non-symlink regular SKILL.md. lstat so we never follow links."""
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def resolve_scan_root(
+    raw: str, *, project_root: Path, user_home: Path
+) -> Path | None:
+    text = raw.strip()
+    if not text:
+        return None
+    if text == "~" or text.startswith("~/") or text.startswith("~\\"):
+        rest = text[2:] if text != "~" else ""
+        expanded = user_home.joinpath(rest) if rest else user_home
+    else:
+        expanded = Path(text)
+        if not expanded.is_absolute():
+            expanded = project_root / expanded
+    return expanded
+
+
+def catalog_scan_roots(
+    *,
+    plugin_root: Path,
+    project_root: Path,
+    user_home: Path,
+    environ: dict[str, str] | None = None,
+) -> list[Path]:
+    env = environ if environ is not None else os.environ
+    roots: list[Path] = [plugin_root / "skills"]
+    for part in env.get("SUPERSUIT_SKILL_PATH", "").split(os.pathsep):
+        resolved = resolve_scan_root(
+            part, project_root=project_root, user_home=user_home
+        )
+        if resolved is not None:
+            roots.append(resolved)
+    for rel in (".agents/skills", ".claude/skills", ".opencode/skills"):
+        roots.append(project_root / rel)
+    for rel in (".agents/skills", ".claude/skills", ".config/opencode/skills"):
+        roots.append(user_home / rel)
+    return [path for path in roots if path.is_dir()]
+
+
+def iter_skill_md_files(root: Path) -> list[Path]:
+    own = root / "SKILL.md"
+    if is_regular_skill_md(own):
+        return [own]
+    found: list[Path] = []
+    try:
+        children = sorted(root.iterdir(), key=lambda item: item.name)
+    except OSError:
+        return []
+    for child in children:
+        try:
+            if not child.is_dir():
+                continue
+        except OSError:
+            continue
+        skill_md = child / "SKILL.md"
+        if is_regular_skill_md(skill_md):
+            found.append(skill_md)
+    return found
+
+
+def discover_skill_catalog(
+    *,
+    plugin_root: Path,
+    project_root: Path,
+    user_home: Path,
+    environ: dict[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Walk catalog roots; first-seen logical id with a valid marker wins."""
+    catalog: dict[str, dict[str, Any]] = {}
+    for root in catalog_scan_roots(
+        plugin_root=plugin_root,
+        project_root=project_root,
+        user_home=user_home,
+        environ=environ,
+    ):
+        for skill_md in iter_skill_md_files(root):
+            try:
+                text = skill_md.read_text(encoding="utf-8")
+            except OSError as exc:
+                print(
+                    f"warning: skipping unreadable SKILL.md {skill_md}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            frontmatter = extract_skill_frontmatter(text)
+            status, outcomes = classify_skill_marker(frontmatter)
+            if status == "absent":
+                continue
+            if status != "ok" or outcomes is None:
+                print(
+                    "warning: skipping SKILL.md with invalid "
+                    f"metadata.supersuit.outcomes: {skill_md}",
+                    file=sys.stderr,
+                )
+                continue
+            logical_id = skill_logical_id(frontmatter, skill_md.parent)
+            if logical_id in catalog:
+                continue
+            catalog[logical_id] = {
+                "path": str(skill_md.parent.resolve()),
+                "outcomes": list(outcomes),
+            }
+    return catalog
 
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
