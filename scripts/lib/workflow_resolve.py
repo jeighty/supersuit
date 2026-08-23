@@ -695,6 +695,7 @@ def validate_workflow(
     project_root: Path,
     bundled_skills: set[str],
     plugin_root: Path | None = None,
+    extra_known_ids: set[str] | None = None,
 ) -> list[str]:
     """Validate a merged workflow document. Empty list means valid."""
     errors: list[str] = []
@@ -709,7 +710,7 @@ def validate_workflow(
         errors.append("skills must be a mapping")
         skills = {}
 
-    known_ids = bundled_skills | set(skills.keys())
+    known_ids = bundled_skills | set(skills.keys()) | set(extra_known_ids or ())
     normalized_skills: dict[str, dict[str, Any]] = {}
 
     for skill_id, entry in skills.items():
@@ -803,7 +804,11 @@ def validate_workflow(
             continue
 
         if to not in (None, "wait"):
-            has_ungated_target = to in bundled_skills or to in normalized_skills
+            has_ungated_target = (
+                to in bundled_skills
+                or to in normalized_skills
+                or to in set(extra_known_ids or ())
+            )
             if not has_ungated_target:
                 trans_req = when_sig or frozenset()
                 skill_reqs: list[frozenset[str]] = []
@@ -832,6 +837,7 @@ def apply_capabilities(
     *,
     capabilities: list[str],
     bundled_skills: set[str],
+    extra_known_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Filter merged workflow to the active capability set and strip when clauses."""
     active = set(capabilities)
@@ -874,7 +880,7 @@ def apply_capabilities(
         )
         skills_out[skill_id] = _strip_when(chosen)
 
-    for skill_id in bundled_skills:
+    for skill_id in set(bundled_skills) | set(extra_known_ids or ()):
         if skill_id not in skills_out:
             skills_out[skill_id] = {}
 
@@ -902,7 +908,7 @@ def apply_capabilities(
         )
         transitions_out.append(_strip_when(chosen))
 
-    known_ids = bundled_skills | set(skills_out.keys())
+    known_ids = bundled_skills | set(skills_out.keys()) | set(extra_known_ids or ())
     for transition in transitions_out:
         to = transition.get("to")
         if to not in (None, "wait") and to not in known_ids:
@@ -920,6 +926,64 @@ def apply_capabilities(
     }
 
 
+def outcomes_from_skill_dir(skill_dir: Path) -> list[str] | None:
+    """Read a directory's SKILL.md marker. Invalid markers warn and return None."""
+    skill_md = skill_dir / "SKILL.md"
+    if not is_regular_skill_md(skill_md):
+        return None
+    try:
+        frontmatter = extract_skill_frontmatter(skill_md.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    status, outcomes = classify_skill_marker(frontmatter)
+    if status == "invalid":
+        print(
+            "warning: skipping SKILL.md with invalid "
+            f"metadata.supersuit.outcomes: {skill_md}",
+            file=sys.stderr,
+        )
+        return None
+    if status != "ok" or outcomes is None:
+        return None
+    return list(outcomes)
+
+
+def attach_catalog_outcomes(
+    skills: dict[str, Any],
+    catalog: dict[str, dict[str, Any]],
+    *,
+    project_root: Path,
+) -> None:
+    """Attach skill-frontmatter outcomes using the winning SKILL.md."""
+    for skill_id, info in catalog.items():
+        if skill_id not in skills:
+            skills[skill_id] = {}
+    for skill_id, entry in list(skills.items()):
+        if not isinstance(entry, dict):
+            continue
+        if "run" in entry:
+            continue
+        if "path" in entry:
+            path_value = entry.get("path")
+            if isinstance(path_value, str) and path_value.strip():
+                outcomes = outcomes_from_skill_dir(
+                    _resolve_skill_path(path_value, project_root)
+                )
+                if outcomes:
+                    entry["outcomes"] = outcomes
+            continue
+        if "skill" in entry:
+            alias = entry.get("skill")
+            info = catalog.get(alias) if isinstance(alias, str) else None
+            if info:
+                entry["outcomes"] = list(info["outcomes"])
+            continue
+        info = catalog.get(skill_id)
+        if info:
+            entry["path"] = info["path"]
+            entry["outcomes"] = list(info["outcomes"])
+
+
 def resolve_workflow(
     *,
     plugin_root: Path,
@@ -927,8 +991,10 @@ def resolve_workflow(
     user_home: Path,
     bundled_only: bool = False,
     capabilities: list[str] | None = None,
+    environ: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Load, merge, validate, and return the resolved workflow graph."""
+    env = environ if environ is not None else os.environ
     default_path = plugin_root / "workflows" / "default.yaml"
     merged = load_workflow_mapping(default_path, label="bundled workflow")
 
@@ -952,20 +1018,33 @@ def resolve_workflow(
             merged = merge_workflows(merged, project_doc)
 
     bundled_skills = set(discover_known_skills(plugin_root))
+    catalog = discover_skill_catalog(
+        plugin_root=plugin_root,
+        project_root=project_root,
+        user_home=user_home,
+        environ=env,
+    )
+    extra_known_ids = set(catalog)
     errors = validate_workflow(
         merged,
         project_root=project_root,
         bundled_skills=bundled_skills,
         plugin_root=plugin_root,
+        extra_known_ids=extra_known_ids,
     )
     if errors:
         raise WorkflowResolveError("; ".join(errors))
 
-    return apply_capabilities(
+    resolved = apply_capabilities(
         merged,
         capabilities=list(capabilities or []),
         bundled_skills=bundled_skills,
+        extra_known_ids=extra_known_ids,
     )
+    attach_catalog_outcomes(
+        resolved["skills"], catalog, project_root=project_root
+    )
+    return resolved
 
 
 def run_workflow_action(

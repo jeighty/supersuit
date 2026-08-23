@@ -1205,6 +1205,89 @@ else
   fail "skill catalog discovery order"
 fi
 
+echo "=== resolve catalogs opted-in skills ==="
+CAT_PROJ="$TEST_ROOT/resolve-cat-proj"
+CAT_HOME="$TEST_ROOT/resolve-cat-home"
+CAT_PACK="$TEST_ROOT/resolve-cat-pack"
+mkdir -p "$CAT_PROJ" "$CAT_HOME" "$CAT_PACK/my-review" \
+  "$CAT_PROJ/skills/ignored" "$CAT_PROJ/.supersuit/skills/leaked" \
+  "$CAT_PROJ/.agents/skills/from-agents"
+cat > "$CAT_PACK/my-review/SKILL.md" <<'EOF'
+---
+name: my-review
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - changes-requested
+---
+FOREIGN_BODY_MUST_NOT_LEAK
+EOF
+cat > "$CAT_PROJ/.agents/skills/from-agents/SKILL.md" <<'EOF'
+---
+name: from-agents
+metadata:
+  supersuit:
+    outcomes:
+      - done
+---
+agents body
+EOF
+cat > "$CAT_PROJ/skills/ignored/SKILL.md" <<'EOF'
+---
+name: ignored
+metadata:
+  supersuit:
+    outcomes:
+      - nope
+---
+project-root skills body
+EOF
+cat > "$CAT_PROJ/.supersuit/skills/leaked/SKILL.md" <<'EOF'
+---
+name: leaked
+metadata:
+  supersuit:
+    outcomes:
+      - nope
+---
+dot supersuit skills body
+EOF
+mkdir -p "$CAT_PROJ/.supersuit"
+cat > "$CAT_PROJ/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+transitions:
+  - from: brainstorming
+    on: approved-architectural
+    to: my-review
+  - from: brainstorming
+    on: approved-bounded
+    to: null
+  - from: brainstorming
+    on: approved-spike
+    to: null
+EOF
+if OUT="$(cd "$CAT_PROJ" && SUPERSUIT_SKILL_PATH="$CAT_PACK" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$CAT_PROJ" --user-home "$CAT_HOME")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+e=d["skills"]["my-review"]
+assert e["outcomes"]==["approved","changes-requested"]
+assert e["path"].endswith("my-review")
+assert "ignored" not in d["skills"]
+assert "leaked" not in d["skills"]
+assert d["skills"]["from-agents"]["outcomes"]==["done"]
+t=[x for x in d["transitions"] if x["from"]=="brainstorming" and x["on"]=="approved-architectural"][0]
+assert t["to"]=="my-review"
+assert "run" not in d["skills"]["brainstorming"]
+'; then
+  pass "resolve catalogs opted-in skills"
+else
+  fail "resolve catalogs opted-in skills"
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAILED: $FAILURES"
   exit 1
