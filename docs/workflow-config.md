@@ -11,6 +11,7 @@ Config layers live under **`.supersuit/`** (canonical). Leftover `.superpowers/`
 - [Harness/external workspace preference](superpowers/specs/2026-08-21-native-worktree-preference-design.md)
 - [Visual-surface capability ladder](superpowers/specs/2026-08-21-visual-surface-ladder-design.md)
 - [Exec-hook host auto-path](superpowers/specs/2026-08-22-exec-hook-auto-path-design.md)
+- [Skill outcome catalog](superpowers/specs/2026-08-23-skill-outcome-catalog-design.md)
 
 ## Layer precedence
 
@@ -109,6 +110,8 @@ Notes:
 ```
 
 The command prints JSON including `outcome` and `exit_code` on **stdout**. Child script stdout/stderr are forwarded to the CLI's stderr so the JSON stays parseable. Use `outcome` as the map's `on` for the next handoff.
+
+`run.outcomes` maps process exit codes to labels. It is not the skill frontmatter list under `metadata.supersuit.outcomes` (see [Skill outcome catalog](#skill-outcome-catalog)).
 
 ## Capability-aware overlays
 
@@ -434,6 +437,47 @@ skills:
 ```
 
 An empty object resets that logical id to identity (plugin skill of the same name).
+
+## Skill outcome catalog
+
+Standalone skills (a pack on `SUPERSUIT_SKILL_PATH`, or a skill already in a harness table dir) can **opt in** so the resolver lists them and copies the labels they emit. This is **not** `skills.<id>.run.outcomes` (exit-code → label for a deterministic action). Do not mix the two.
+
+### Author opt-in
+
+In `SKILL.md` frontmatter only:
+
+```yaml
+---
+name: my-review
+description: Use when a human asks for a structured review.
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - changes-requested
+      - skip
+---
+```
+
+Rules:
+
+- `metadata.supersuit` must be a mapping. `outcomes` must be a non-empty list of non-empty strings. Duplicates collapse, first-seen order kept.
+- Do not put `to`, `transitions`, or a graph in frontmatter. The overlay owns `(from, on, to)`. Unmapped outcomes stay `wait`.
+- Keep frontmatter `name` equal to the skill directory name. The catalog key is `name` (else the directory); the harness Skill tool still uses the directory name.
+- A missing `metadata.supersuit` is an ordinary skill (not cataloged). An invalid marker is warned and skipped; resolve continues.
+
+### Where skills are found
+
+Scan order, first-seen logical id wins. A root is `<root>/<id>/SKILL.md`, or a path that itself contains `SKILL.md`.
+
+1. This plugin’s `skills/`
+2. `SUPERSUIT_SKILL_PATH` — platform pathsep (`:` on Unix, `;` on Windows; Python `os.pathsep`). `~` expands; relative entries are from the project root. Preferred way to add a checkout of `jamesthomasonjr/skills` or another pack.
+3. Project: `.agents/skills`, `.claude/skills`, `.opencode/skills`
+4. User: `~/.agents/skills`, `~/.claude/skills`, `~/.config/opencode/skills`
+
+Not scanned unless listed on `SUPERSUIT_SKILL_PATH`: project-root `skills/`, `.supersuit/skills`, plugin caches, `node_modules`. Do not invent a `.supersuit/skills` install home.
+
+Resolved identity entries gain compact `path` + `outcomes`. Overlay `{ skill: other-name }` copies that other skill’s cataloged outcomes when present. `run` / `exec` entries keep only `run.outcomes`. SessionStart still injects `using-superpowers` and `WORKFLOW_MAP` only — not foreign skill bodies.
 
 ## Validation
 
