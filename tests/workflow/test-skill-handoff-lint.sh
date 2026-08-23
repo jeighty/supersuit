@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+command -v rg >/dev/null || { echo "FAIL: rg (ripgrep) is required" >&2; exit 1; }
 FAILURES=0
 # Forbidden *directive* patterns in pipeline skills (allow Outcomes descriptive text via careful patterns)
 for f in brainstorming writing-plans executing-plans subagent-driven-development; do
