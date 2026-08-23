@@ -1197,6 +1197,21 @@ listed = discover_skill_catalog(
     environ={"SUPERSUIT_SKILL_PATH": str(project / "skills")},
 )
 assert listed["shadowed"]["outcomes"] == ["from-project-skills"]
+
+single = base / "single-skill"
+single.mkdir(parents=True)
+(single / "SKILL.md").write_text(
+    "---\nname: solo\nmetadata:\n  supersuit:\n    outcomes:\n      - only\n---\n",
+    encoding="utf-8",
+)
+solo = discover_skill_catalog(
+    plugin_root=plugin,
+    project_root=project,
+    user_home=home,
+    environ={"SUPERSUIT_SKILL_PATH": str(single)},
+)
+assert solo["solo"]["outcomes"] == ["only"]
+assert Path(solo["solo"]["path"]) == single.resolve()
 print("ok")
 PY
 then
