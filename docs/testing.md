@@ -25,6 +25,11 @@ Live in `tests/`. Currently:
 
 Run plugin tests via the relevant directory's `run-*.sh` or `npm test`.
 
+PR CI (`.github/workflows/plugin-tests.yml`) runs the deterministic
+suites listed above on `push`/`pull_request` to `dev`: workflow,
+hooks/session-start, migration, shell-lint, and version-bump. It does
+not run `evals/` or live harness sessions.
+
 ## Skill behavior evals
 
 Live in `evals/`. Drill is the harness; scenarios live at `evals/scenarios/*.yaml`. See `evals/README.md` for setup. Quick start:

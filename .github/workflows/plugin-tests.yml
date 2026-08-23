@@ -1,0 +1,27 @@
+name: Plugin tests
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yq
+        run: sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq
+      - name: Run deterministic plugin suites
+        run: |
+          set -euo pipefail
+          /bin/bash tests/workflow/test-resolve-workflow.sh
+          /bin/bash tests/workflow/test-skill-handoff-lint.sh
+          /bin/bash tests/workflow/test-native-worktree.sh
+          /bin/bash tests/workflow/test-visual-surface.sh
+          /bin/bash tests/workflow/test-exec-hook.sh
+          /bin/bash tests/hooks/test-session-start.sh
+          /bin/bash tests/migration/test-migrate-to-supersuit.sh
+          /bin/bash tests/shell-lint/test-lint-shell.sh
+          /bin/bash tests/version-bump/test-bump-version.sh
