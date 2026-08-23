@@ -1067,6 +1067,552 @@ else
   fi
 fi
 
+echo "=== skill frontmatter marker helpers ==="
+if python3 - "$REPO_ROOT" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
+from workflow_resolve import (
+    classify_skill_marker,
+    extract_skill_frontmatter,
+    skill_logical_id,
+)
+
+text = """---
+name: my-review
+description: Use when a human asks for a structured review.
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - changes-requested
+      - approved
+      - skip
+---
+
+# Body that must not be parsed
+to: writing-plans
+"""
+fm = extract_skill_frontmatter(text)
+assert fm["name"] == "my-review"
+assert "Body" not in str(fm)
+status, outcomes = classify_skill_marker(fm)
+assert status == "ok"
+assert outcomes == ["approved", "changes-requested", "skip"]
+assert skill_logical_id(fm, Path("/tmp/review-changes")) == "my-review"
+
+plain = extract_skill_frontmatter("---\nname: plain\n---\n")
+assert classify_skill_marker(plain) == ("absent", None)
+assert skill_logical_id(plain, Path("/tmp/plain")) == "plain"
+assert skill_logical_id({"name": "  "}, Path("/tmp/dir-id")) == "dir-id"
+
+empty_list = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    outcomes: []\n---\n"
+)
+assert classify_skill_marker(empty_list)[0] == "invalid"
+
+not_map = extract_skill_frontmatter("---\nmetadata:\n  supersuit: yes\n---\n")
+assert classify_skill_marker(not_map)[0] == "invalid"
+
+missing_outcomes = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    extra: 1\n---\n"
+)
+assert classify_skill_marker(missing_outcomes)[0] == "invalid"
+
+blank = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    outcomes:\n      - ok\n      - ''\n---\n"
+)
+assert classify_skill_marker(blank)[0] == "invalid"
+print("ok")
+PY
+then
+  pass "skill frontmatter marker helpers"
+else
+  fail "skill frontmatter marker helpers"
+fi
+
+echo "=== frontmatter block scalars keep valid outcomes ==="
+if python3 - "$REPO_ROOT" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
+from workflow_resolve import classify_skill_marker, extract_skill_frontmatter
+
+literal = """---
+name: block-review
+description: |
+  Use when a human asks for a structured review
+  that spans more than one line.
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - skip
+---
+FOREIGN_BODY
+"""
+fm = extract_skill_frontmatter(literal)
+assert fm is not None, "literal block description must parse"
+assert fm["name"] == "block-review"
+assert "structured review" in fm["description"]
+status, outcomes = classify_skill_marker(fm)
+assert status == "ok", status
+assert outcomes == ["approved", "skip"]
+
+folded = """---
+name: folded-review
+description: >-
+  Use when a human asks for a structured review
+  that spans more than one line.
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+---
+FOREIGN_BODY
+"""
+fm = extract_skill_frontmatter(folded)
+assert fm is not None, "folded description must parse"
+assert fm["name"] == "folded-review"
+status, outcomes = classify_skill_marker(fm)
+assert status == "ok", status
+assert outcomes == ["approved"]
+print("ok")
+PY
+then
+  pass "frontmatter block scalars keep valid outcomes"
+else
+  fail "frontmatter block scalars keep valid outcomes"
+fi
+
+echo "=== unreadable frontmatter with supersuit pocket warns ==="
+if python3 - "$REPO_ROOT" "$TEST_ROOT" <<'PY'
+import io
+import sys
+from contextlib import redirect_stderr
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
+from workflow_resolve import discover_skill_catalog
+
+base = Path(sys.argv[2]) / "frontmatter-parse"
+plugin = base / "plugin"
+project = base / "proj"
+home = base / "home"
+pack = base / "pack"
+(plugin / "skills").mkdir(parents=True)
+project.mkdir(parents=True)
+home.mkdir(parents=True)
+
+broken = pack / "broken-tab"
+broken.mkdir(parents=True)
+(broken / "SKILL.md").write_text(
+    "---\nname: broken-tab\ndescription: x\nmetadata:\n\tsupersuit:\n"
+    "    outcomes:\n      - approved\n---\nbody\n",
+    encoding="utf-8",
+)
+plain_broken = pack / "plain-broken"
+plain_broken.mkdir(parents=True)
+(plain_broken / "SKILL.md").write_text(
+    "---\nname: plain-broken\ndescription: \"unclosed\n---\nbody\n",
+    encoding="utf-8",
+)
+
+err = io.StringIO()
+with redirect_stderr(err):
+    catalog = discover_skill_catalog(
+        plugin_root=plugin,
+        project_root=project,
+        user_home=home,
+        environ={"SUPERSUIT_SKILL_PATH": str(pack)},
+    )
+stderr = err.getvalue()
+assert "broken-tab" not in catalog
+assert "plain-broken" not in catalog
+assert "invalid metadata.supersuit.outcomes" in stderr
+assert "broken-tab" in stderr
+assert "plain-broken" not in stderr
+print("ok")
+PY
+then
+  pass "unreadable frontmatter with supersuit pocket warns"
+else
+  fail "unreadable frontmatter with supersuit pocket warns"
+fi
+
+echo "=== skill catalog discovery order ==="
+if python3 - "$REPO_ROOT" "$TEST_ROOT" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
+from workflow_resolve import discover_skill_catalog
+
+base = Path(sys.argv[2]) / "catalog-disc"
+plugin = base / "plugin"
+project = base / "proj"
+home = base / "home"
+pack_a = base / "pack-a"
+pack_b = base / "pack-b"
+proj_skills = project / "skills" / "shadowed"
+dot_supersuit = project / ".supersuit" / "skills" / "leaked"
+
+def write_skill(root, dirname, name, outcomes, body="BODY"):
+    skill_dir = root / dirname
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["---", f"name: {name}", "metadata:", "  supersuit:", "    outcomes:"]
+    for item in outcomes:
+        lines.append(f"      - {item}")
+    lines.extend(["---", "", body, ""])
+    (skill_dir / "SKILL.md").write_text("\n".join(lines), encoding="utf-8")
+    return skill_dir
+
+(plugin / "skills").mkdir(parents=True)
+write_skill(plugin / "skills", "bundled-marked", "bundled-marked", ["done"])
+write_skill(pack_a, "review-changes", "my-review", ["approved", "skip"], body="FOREIGN_BODY_PACK_A")
+write_skill(pack_b, "review-changes", "my-review", ["later"], body="FOREIGN_BODY_PACK_B")
+write_skill(project / ".agents" / "skills", "agents-skill", "agents-skill", ["from-agents"])
+write_skill(project / ".opencode" / "skills", "oc-skill", "oc-skill", ["from-oc"])
+write_skill(home / ".agents" / "skills", "user-agents", "user-agents", ["from-user"])
+write_skill(proj_skills.parent, "shadowed", "shadowed", ["from-project-skills"])
+write_skill(dot_supersuit.parent, "leaked", "leaked", ["from-dot-supersuit"])
+plain = project / ".claude" / "skills" / "plain"
+plain.mkdir(parents=True)
+(plain / "SKILL.md").write_text("---\nname: plain\n---\n# no marker\n", encoding="utf-8")
+
+catalog = discover_skill_catalog(
+    plugin_root=plugin,
+    project_root=project,
+    user_home=home,
+    environ={
+        "SUPERSUIT_SKILL_PATH": os.pathsep.join([str(pack_a), str(pack_b)]),
+    },
+)
+assert "bundled-marked" in catalog
+assert catalog["my-review"]["outcomes"] == ["approved", "skip"]
+assert Path(catalog["my-review"]["path"]) == pack_a / "review-changes"
+assert "agents-skill" in catalog
+assert "oc-skill" in catalog
+assert "user-agents" in catalog
+assert "plain" not in catalog
+assert "shadowed" not in catalog
+assert "leaked" not in catalog
+
+listed = discover_skill_catalog(
+    plugin_root=plugin,
+    project_root=project,
+    user_home=home,
+    environ={"SUPERSUIT_SKILL_PATH": str(project / "skills")},
+)
+assert listed["shadowed"]["outcomes"] == ["from-project-skills"]
+
+single = base / "single-skill"
+single.mkdir(parents=True)
+(single / "SKILL.md").write_text(
+    "---\nname: solo\nmetadata:\n  supersuit:\n    outcomes:\n      - only\n---\n",
+    encoding="utf-8",
+)
+solo = discover_skill_catalog(
+    plugin_root=plugin,
+    project_root=project,
+    user_home=home,
+    environ={"SUPERSUIT_SKILL_PATH": str(single)},
+)
+assert solo["solo"]["outcomes"] == ["only"]
+assert Path(solo["solo"]["path"]) == single.resolve()
+print("ok")
+PY
+then
+  pass "skill catalog discovery order"
+else
+  fail "skill catalog discovery order"
+fi
+
+echo "=== resolve catalogs opted-in skills ==="
+CAT_PROJ="$TEST_ROOT/resolve-cat-proj"
+CAT_HOME="$TEST_ROOT/resolve-cat-home"
+CAT_PACK="$TEST_ROOT/resolve-cat-pack"
+mkdir -p "$CAT_PROJ" "$CAT_HOME" "$CAT_PACK/my-review" \
+  "$CAT_PROJ/skills/ignored" "$CAT_PROJ/.supersuit/skills/leaked" \
+  "$CAT_PROJ/.agents/skills/from-agents"
+cat > "$CAT_PACK/my-review/SKILL.md" <<'EOF'
+---
+name: my-review
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - changes-requested
+---
+FOREIGN_BODY_MUST_NOT_LEAK
+EOF
+cat > "$CAT_PROJ/.agents/skills/from-agents/SKILL.md" <<'EOF'
+---
+name: from-agents
+metadata:
+  supersuit:
+    outcomes:
+      - done
+---
+agents body
+EOF
+cat > "$CAT_PROJ/skills/ignored/SKILL.md" <<'EOF'
+---
+name: ignored
+metadata:
+  supersuit:
+    outcomes:
+      - nope
+---
+project-root skills body
+EOF
+cat > "$CAT_PROJ/.supersuit/skills/leaked/SKILL.md" <<'EOF'
+---
+name: leaked
+metadata:
+  supersuit:
+    outcomes:
+      - nope
+---
+dot supersuit skills body
+EOF
+mkdir -p "$CAT_PROJ/.supersuit"
+cat > "$CAT_PROJ/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+transitions:
+  - from: brainstorming
+    on: approved-architectural
+    to: my-review
+  - from: brainstorming
+    on: approved-bounded
+    to: null
+  - from: brainstorming
+    on: approved-spike
+    to: null
+EOF
+if OUT="$(cd "$CAT_PROJ" && SUPERSUIT_SKILL_PATH="$CAT_PACK" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$CAT_PROJ" --user-home "$CAT_HOME")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+e=d["skills"]["my-review"]
+assert e["outcomes"]==["approved","changes-requested"]
+assert e["path"].endswith("my-review")
+assert "ignored" not in d["skills"]
+assert "leaked" not in d["skills"]
+assert d["skills"]["from-agents"]["outcomes"]==["done"]
+t=[x for x in d["transitions"] if x["from"]=="brainstorming" and x["on"]=="approved-architectural"][0]
+assert t["to"]=="my-review"
+assert "run" not in d["skills"]["brainstorming"]
+'; then
+  pass "resolve catalogs opted-in skills"
+else
+  fail "resolve catalogs opted-in skills"
+fi
+
+echo "=== resolve catalogs skill with multiline description ==="
+ML_PROJ="$TEST_ROOT/multiline-proj"
+ML_HOME="$TEST_ROOT/multiline-home"
+ML_PACK="$TEST_ROOT/multiline-pack"
+mkdir -p "$ML_PROJ" "$ML_HOME" "$ML_PACK/block-review"
+cat > "$ML_PACK/block-review/SKILL.md" <<'EOF'
+---
+name: block-review
+description: |
+  Use when a human asks for a structured review
+  that spans more than one line.
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - changes-requested
+---
+MULTILINE_FOREIGN_BODY
+EOF
+if OUT="$(cd "$ML_PROJ" && SUPERSUIT_SKILL_PATH="$ML_PACK" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$ML_PROJ" --user-home "$ML_HOME")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+e=d["skills"]["block-review"]
+assert e["outcomes"]==["approved","changes-requested"]
+assert e["path"].endswith("block-review")
+'; then
+  pass "resolve catalogs skill with multiline description"
+else
+  fail "resolve catalogs skill with multiline description"
+fi
+
+echo "=== invalid marker warns and resolve continues ==="
+BAD="$TEST_ROOT/invalid-marker-proj"
+BAD_HOME="$TEST_ROOT/invalid-marker-home"
+mkdir -p "$BAD/.claude/skills/broken" "$BAD_HOME"
+cat > "$BAD/.claude/skills/broken/SKILL.md" <<'EOF'
+---
+name: broken
+metadata:
+  supersuit:
+    outcomes: []
+---
+broken body
+EOF
+set +e
+OUT="$(cd "$BAD" && "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$BAD" --user-home "$BAD_HOME" 2>"$TEST_ROOT/invalid-marker.err")"
+status=$?
+set -e
+if [[ "$status" -eq 0 ]] &&
+  echo "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["version"]==1; assert "broken" not in d["skills"]' &&
+  grep -qi 'invalid metadata.supersuit.outcomes' "$TEST_ROOT/invalid-marker.err"; then
+  pass "invalid marker warns and resolve continues"
+else
+  fail "invalid marker warns and resolve continues"
+  echo "$OUT" | sed 's/^/    /'
+  sed 's/^/    /' "$TEST_ROOT/invalid-marker.err"
+fi
+
+echo "=== overlay skill alias attaches cataloged outcomes ==="
+ALIAS_PROJ="$TEST_ROOT/alias-proj"
+ALIAS_HOME="$TEST_ROOT/alias-home"
+ALIAS_PACK="$TEST_ROOT/alias-pack"
+mkdir -p "$ALIAS_PROJ/.supersuit" "$ALIAS_HOME" \
+  "$ALIAS_PACK/other-name" "$ALIAS_PACK/bare-alias"
+cat > "$ALIAS_PACK/other-name/SKILL.md" <<'EOF'
+---
+name: other-name
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - skip
+---
+aliased body
+EOF
+cat > "$ALIAS_PACK/bare-alias/SKILL.md" <<'EOF'
+---
+name: bare-alias
+---
+no marker
+EOF
+cat > "$ALIAS_PROJ/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+skills:
+  review:
+    skill: other-name
+  missing-alias:
+    skill: not-cataloged
+  bare:
+    skill: bare-alias
+EOF
+if OUT="$(cd "$ALIAS_PROJ" && SUPERSUIT_SKILL_PATH="$ALIAS_PACK" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$ALIAS_PROJ" --user-home "$ALIAS_HOME")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+assert d["skills"]["review"]["skill"]=="other-name"
+assert d["skills"]["review"]["outcomes"]==["approved","skip"]
+assert "outcomes" not in d["skills"]["missing-alias"]
+assert "outcomes" not in d["skills"]["bare"]
+'; then
+  pass "overlay skill alias attaches cataloged outcomes"
+else
+  fail "overlay skill alias attaches cataloged outcomes"
+fi
+
+echo "=== overlay path wins for outcomes SKILL.md ==="
+PATH_PROJ="$TEST_ROOT/path-win-proj"
+PATH_HOME="$TEST_ROOT/path-win-home"
+PATH_PACK="$TEST_ROOT/path-win-pack"
+PATH_CUSTOM="$TEST_ROOT/path-win-custom/custom-review"
+mkdir -p "$PATH_PROJ/.supersuit" "$PATH_HOME" "$PATH_PACK/my-review" "$PATH_CUSTOM"
+cat > "$PATH_PACK/my-review/SKILL.md" <<'EOF'
+---
+name: my-review
+metadata:
+  supersuit:
+    outcomes:
+      - first-seen
+---
+pack body
+EOF
+cat > "$PATH_CUSTOM/SKILL.md" <<'EOF'
+---
+name: my-review
+metadata:
+  supersuit:
+    outcomes:
+      - from-path
+---
+custom body
+EOF
+cat > "$PATH_PROJ/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+skills:
+  my-review:
+    path: ../path-win-custom/custom-review
+EOF
+if OUT="$(cd "$PATH_PROJ" && SUPERSUIT_SKILL_PATH="$PATH_PACK" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$PATH_PROJ" --user-home "$PATH_HOME")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+assert d["skills"]["my-review"]["outcomes"]==["from-path"]
+assert "first-seen" not in d["skills"]["my-review"]["outcomes"]
+'; then
+  pass "overlay path wins for outcomes SKILL.md"
+else
+  fail "overlay path wins for outcomes SKILL.md"
+fi
+
+echo "=== run entries do not get skill-frontmatter outcomes ==="
+mkdir -p "$PROJ/scripts" "$PROJ/.supersuit"
+cat > "$PROJ/scripts/ensure-fixture.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$PROJ/scripts/ensure-fixture.sh"
+mkdir -p "$TEST_ROOT/run-pack/ensure-fixture"
+cat > "$TEST_ROOT/run-pack/ensure-fixture/SKILL.md" <<'EOF'
+---
+name: ensure-fixture
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+---
+should not attach
+EOF
+cat > "$PROJ/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+skills:
+  ensure-fixture:
+    run:
+      argv:
+        - scripts/ensure-fixture.sh
+      allow:
+        - project
+EOF
+if OUT="$(cd "$PROJ" && SUPERSUIT_SKILL_PATH="$TEST_ROOT/run-pack" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$PROJ" --user-home "$TEST_HOME")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+e=d["skills"]["ensure-fixture"]
+assert "run" in e
+assert e.get("outcomes") != ["approved"]
+assert e["run"]["outcomes"]["0"]=="complete"
+'; then
+  pass "run entries do not get skill-frontmatter outcomes"
+else
+  fail "run entries do not get skill-frontmatter outcomes"
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAILED: $FAILURES"
   exit 1

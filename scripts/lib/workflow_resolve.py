@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from workflow_yaml import YAMLError, load_yaml
+from workflow_yaml import YAMLError, load_frontmatter_yaml, load_yaml
 
 ALLOWED_RUN_ROOTS = frozenset({"plugin", "project"})
 DEFAULT_RUN_OUTCOMES: dict[str, str] = {"0": "complete", "nonzero": "failed"}
@@ -27,6 +29,10 @@ KNOWN_CAPABILITIES = frozenset(
 
 class WorkflowResolveError(Exception):
     """Raised when workflow configuration cannot be resolved."""
+
+
+class FrontmatterParseError(Exception):
+    """Raised when SKILL.md YAML frontmatter cannot be parsed."""
 
 
 def parse_capabilities(value: str | list[str] | None) -> list[str]:
@@ -220,6 +226,209 @@ def discover_known_skills(plugin_root: Path) -> list[str]:
         for path in skills_dir.glob("*/SKILL.md")
         if path.is_file()
     )
+
+
+def frontmatter_block(text: str) -> str | None:
+    """Return the first YAML frontmatter block (first --- ... ---), or None."""
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    if not text.startswith("---"):
+        return None
+    rest = text[3:]
+    if rest.startswith("\r\n"):
+        rest = rest[2:]
+    elif rest.startswith("\n"):
+        rest = rest[1:]
+    else:
+        return None
+    closer = rest.find("\n---")
+    if closer < 0:
+        return None
+    return rest[:closer]
+
+
+def looks_like_supersuit_pocket(block: str) -> bool:
+    """True when raw frontmatter looks like it declared metadata.supersuit."""
+    return bool(
+        re.search(r"(?m)^metadata:\s*$", block)
+        and re.search(r"(?m)^[ \t]*supersuit:", block)
+    )
+
+
+def extract_skill_frontmatter(text: str) -> dict[str, Any] | None:
+    """Return the first YAML frontmatter mapping (first --- ... ---), or None.
+
+    Uses a frontmatter YAML reader that accepts block scalars (``|``, ``>-``).
+    Unparseable YAML raises :class:`FrontmatterParseError` so callers can warn
+    when a ``metadata.supersuit`` pocket is visible instead of silent-skip.
+    """
+    block = frontmatter_block(text)
+    if block is None:
+        return None
+    try:
+        doc = load_frontmatter_yaml(block)
+    except YAMLError as exc:
+        raise FrontmatterParseError(str(exc)) from exc
+    return doc if isinstance(doc, dict) else None
+
+
+def classify_skill_marker(
+    frontmatter: dict[str, Any] | None,
+) -> tuple[str, list[str] | None]:
+    """Classify metadata.supersuit.outcomes: absent, invalid, or ok."""
+    if not isinstance(frontmatter, dict):
+        return "absent", None
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict) or "supersuit" not in metadata:
+        return "absent", None
+    supersuit = metadata.get("supersuit")
+    if not isinstance(supersuit, dict):
+        return "invalid", None
+    if "outcomes" not in supersuit:
+        return "invalid", None
+    raw = supersuit.get("outcomes")
+    if not isinstance(raw, list) or not raw:
+        return "invalid", None
+    outcomes: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            return "invalid", None
+        if item not in outcomes:
+            outcomes.append(item)
+    if not outcomes:
+        return "invalid", None
+    return "ok", outcomes
+
+
+def skill_logical_id(
+    frontmatter: dict[str, Any] | None, skill_dir: Path
+) -> str:
+    name = frontmatter.get("name") if isinstance(frontmatter, dict) else None
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return skill_dir.name
+
+
+def is_regular_skill_md(path: Path) -> bool:
+    """True for a non-symlink regular SKILL.md. lstat so we never follow links."""
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def resolve_scan_root(
+    raw: str, *, project_root: Path, user_home: Path
+) -> Path | None:
+    text = raw.strip()
+    if not text:
+        return None
+    if text == "~" or text.startswith("~/") or text.startswith("~\\"):
+        rest = text[2:] if text != "~" else ""
+        expanded = user_home.joinpath(rest) if rest else user_home
+    else:
+        expanded = Path(text)
+        if not expanded.is_absolute():
+            expanded = project_root / expanded
+    return expanded
+
+
+def catalog_scan_roots(
+    *,
+    plugin_root: Path,
+    project_root: Path,
+    user_home: Path,
+    environ: dict[str, str] | None = None,
+) -> list[Path]:
+    env = environ if environ is not None else os.environ
+    roots: list[Path] = [plugin_root / "skills"]
+    for part in env.get("SUPERSUIT_SKILL_PATH", "").split(os.pathsep):
+        resolved = resolve_scan_root(
+            part, project_root=project_root, user_home=user_home
+        )
+        if resolved is not None:
+            roots.append(resolved)
+    for rel in (".agents/skills", ".claude/skills", ".opencode/skills"):
+        roots.append(project_root / rel)
+    for rel in (".agents/skills", ".claude/skills", ".config/opencode/skills"):
+        roots.append(user_home / rel)
+    return [path for path in roots if path.is_dir()]
+
+
+def iter_skill_md_files(root: Path) -> list[Path]:
+    own = root / "SKILL.md"
+    if is_regular_skill_md(own):
+        return [own]
+    found: list[Path] = []
+    try:
+        children = sorted(root.iterdir(), key=lambda item: item.name)
+    except OSError:
+        return []
+    for child in children:
+        try:
+            if not child.is_dir():
+                continue
+        except OSError:
+            continue
+        skill_md = child / "SKILL.md"
+        if is_regular_skill_md(skill_md):
+            found.append(skill_md)
+    return found
+
+
+def discover_skill_catalog(
+    *,
+    plugin_root: Path,
+    project_root: Path,
+    user_home: Path,
+    environ: dict[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Walk catalog roots; first-seen logical id with a valid marker wins."""
+    catalog: dict[str, dict[str, Any]] = {}
+    for root in catalog_scan_roots(
+        plugin_root=plugin_root,
+        project_root=project_root,
+        user_home=user_home,
+        environ=environ,
+    ):
+        for skill_md in iter_skill_md_files(root):
+            try:
+                text = skill_md.read_text(encoding="utf-8")
+            except OSError as exc:
+                print(
+                    f"warning: skipping unreadable SKILL.md {skill_md}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            try:
+                frontmatter = extract_skill_frontmatter(text)
+            except FrontmatterParseError:
+                block = frontmatter_block(text) or ""
+                if looks_like_supersuit_pocket(block):
+                    print(
+                        "warning: skipping SKILL.md with invalid "
+                        f"metadata.supersuit.outcomes: {skill_md}",
+                        file=sys.stderr,
+                    )
+                continue
+            status, outcomes = classify_skill_marker(frontmatter)
+            if status == "absent":
+                continue
+            if status != "ok" or outcomes is None:
+                print(
+                    "warning: skipping SKILL.md with invalid "
+                    f"metadata.supersuit.outcomes: {skill_md}",
+                    file=sys.stderr,
+                )
+                continue
+            logical_id = skill_logical_id(frontmatter, skill_md.parent)
+            if logical_id in catalog:
+                continue
+            catalog[logical_id] = {
+                "path": str(skill_md.parent.resolve()),
+                "outcomes": list(outcomes),
+            }
+    return catalog
 
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
@@ -522,6 +731,7 @@ def validate_workflow(
     project_root: Path,
     bundled_skills: set[str],
     plugin_root: Path | None = None,
+    extra_known_ids: set[str] | None = None,
 ) -> list[str]:
     """Validate a merged workflow document. Empty list means valid."""
     errors: list[str] = []
@@ -536,7 +746,7 @@ def validate_workflow(
         errors.append("skills must be a mapping")
         skills = {}
 
-    known_ids = bundled_skills | set(skills.keys())
+    known_ids = bundled_skills | set(skills.keys()) | set(extra_known_ids or ())
     normalized_skills: dict[str, dict[str, Any]] = {}
 
     for skill_id, entry in skills.items():
@@ -630,7 +840,11 @@ def validate_workflow(
             continue
 
         if to not in (None, "wait"):
-            has_ungated_target = to in bundled_skills or to in normalized_skills
+            has_ungated_target = (
+                to in bundled_skills
+                or to in normalized_skills
+                or to in set(extra_known_ids or ())
+            )
             if not has_ungated_target:
                 trans_req = when_sig or frozenset()
                 skill_reqs: list[frozenset[str]] = []
@@ -659,6 +873,7 @@ def apply_capabilities(
     *,
     capabilities: list[str],
     bundled_skills: set[str],
+    extra_known_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Filter merged workflow to the active capability set and strip when clauses."""
     active = set(capabilities)
@@ -701,7 +916,7 @@ def apply_capabilities(
         )
         skills_out[skill_id] = _strip_when(chosen)
 
-    for skill_id in bundled_skills:
+    for skill_id in set(bundled_skills) | set(extra_known_ids or ()):
         if skill_id not in skills_out:
             skills_out[skill_id] = {}
 
@@ -729,7 +944,7 @@ def apply_capabilities(
         )
         transitions_out.append(_strip_when(chosen))
 
-    known_ids = bundled_skills | set(skills_out.keys())
+    known_ids = bundled_skills | set(skills_out.keys()) | set(extra_known_ids or ())
     for transition in transitions_out:
         to = transition.get("to")
         if to not in (None, "wait") and to not in known_ids:
@@ -747,6 +962,74 @@ def apply_capabilities(
     }
 
 
+def outcomes_from_skill_dir(skill_dir: Path) -> list[str] | None:
+    """Read a directory's SKILL.md marker. Invalid markers warn and return None."""
+    skill_md = skill_dir / "SKILL.md"
+    if not is_regular_skill_md(skill_md):
+        return None
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        frontmatter = extract_skill_frontmatter(text)
+    except FrontmatterParseError:
+        if looks_like_supersuit_pocket(frontmatter_block(text) or ""):
+            print(
+                "warning: skipping SKILL.md with invalid "
+                f"metadata.supersuit.outcomes: {skill_md}",
+                file=sys.stderr,
+            )
+        return None
+    status, outcomes = classify_skill_marker(frontmatter)
+    if status == "invalid":
+        print(
+            "warning: skipping SKILL.md with invalid "
+            f"metadata.supersuit.outcomes: {skill_md}",
+            file=sys.stderr,
+        )
+        return None
+    if status != "ok" or outcomes is None:
+        return None
+    return list(outcomes)
+
+
+def attach_catalog_outcomes(
+    skills: dict[str, Any],
+    catalog: dict[str, dict[str, Any]],
+    *,
+    project_root: Path,
+) -> None:
+    """Attach skill-frontmatter outcomes using the winning SKILL.md."""
+    for skill_id, info in catalog.items():
+        if skill_id not in skills:
+            skills[skill_id] = {}
+    for skill_id, entry in list(skills.items()):
+        if not isinstance(entry, dict):
+            continue
+        if "run" in entry:
+            continue
+        if "path" in entry:
+            path_value = entry.get("path")
+            if isinstance(path_value, str) and path_value.strip():
+                outcomes = outcomes_from_skill_dir(
+                    _resolve_skill_path(path_value, project_root)
+                )
+                if outcomes:
+                    entry["outcomes"] = outcomes
+            continue
+        if "skill" in entry:
+            alias = entry.get("skill")
+            info = catalog.get(alias) if isinstance(alias, str) else None
+            if info:
+                entry["outcomes"] = list(info["outcomes"])
+            continue
+        info = catalog.get(skill_id)
+        if info:
+            entry["path"] = info["path"]
+            entry["outcomes"] = list(info["outcomes"])
+
+
 def resolve_workflow(
     *,
     plugin_root: Path,
@@ -754,8 +1037,10 @@ def resolve_workflow(
     user_home: Path,
     bundled_only: bool = False,
     capabilities: list[str] | None = None,
+    environ: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Load, merge, validate, and return the resolved workflow graph."""
+    env = environ if environ is not None else os.environ
     default_path = plugin_root / "workflows" / "default.yaml"
     merged = load_workflow_mapping(default_path, label="bundled workflow")
 
@@ -779,20 +1064,33 @@ def resolve_workflow(
             merged = merge_workflows(merged, project_doc)
 
     bundled_skills = set(discover_known_skills(plugin_root))
+    catalog = discover_skill_catalog(
+        plugin_root=plugin_root,
+        project_root=project_root,
+        user_home=user_home,
+        environ=env,
+    )
+    extra_known_ids = set(catalog)
     errors = validate_workflow(
         merged,
         project_root=project_root,
         bundled_skills=bundled_skills,
         plugin_root=plugin_root,
+        extra_known_ids=extra_known_ids,
     )
     if errors:
         raise WorkflowResolveError("; ".join(errors))
 
-    return apply_capabilities(
+    resolved = apply_capabilities(
         merged,
         capabilities=list(capabilities or []),
         bundled_skills=bundled_skills,
+        extra_known_ids=extra_known_ids,
     )
+    attach_catalog_outcomes(
+        resolved["skills"], catalog, project_root=project_root
+    )
+    return resolved
 
 
 def run_workflow_action(
