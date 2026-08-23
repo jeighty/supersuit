@@ -1,5 +1,5 @@
 name: supersuit
-version: 6.3.0
+version: 0.1.0-dev
 description: Supersuit — framework for Superpowers-based workflows (not a Superpowers replacement); Hermes Agent plugin
 author: jeighty
 provides_hooks:

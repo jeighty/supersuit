@@ -4,8 +4,9 @@ sections blank, contain multiple unrelated changes, or show no evidence
 of human involvement will be closed without review.
 -->
 
-> **This PR MUST target `main`.** `main` is this fork’s default and
-> released branch. Open feature-branch PRs against `main`.
+> **This PR MUST target `dev`.** `dev` is the work branch. `main` is
+> released (marketplace / installs). Open feature-branch PRs against
+> `dev`. A release is a `dev` → `main` PR.
 
 ## Who is submitting this PR? (required)
 <!-- Required. PRs that omit this will be closed. We assume an agent wrote

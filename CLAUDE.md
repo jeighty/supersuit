@@ -29,7 +29,7 @@ If any of these checks fail, do not open the PR. Explain why and what would need
 
 **Submitters MUST identify themselves** (model, harness, harness version, plugins — or “written by hand”).
 
-**All PRs MUST target `main`.** `main` is this fork’s default and released branch. Use a feature branch for the work; open the PR against `main`.
+**All PRs MUST target `dev`.** `dev` is the work branch. `main` is released (marketplace / installs). Use a feature branch for the work; open the PR against `dev`. A release is a `dev` → `main` PR.
 
 ## What belongs here
 
