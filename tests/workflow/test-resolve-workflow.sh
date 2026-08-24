@@ -60,7 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
 from workflow_resolve import merge_workflows
 
-base = {"version": 1, "skills": {"brainstorming": {"path": "/old"}}, "entries": {}, "transitions": []}
+base = {"version": 1, "skills": {"brainstorming": {"path": "/old"}}, "transitions": []}
 user = {"skills": {"brainstorming": {"skill": "alias-a"}}}
 project = {"skills": {"brainstorming": {"path": "/proj"}}}
 m1 = merge_workflows(base, user)
@@ -77,7 +77,7 @@ else
   fail "skills replace-by-id"
 fi
 
-echo "=== merge transitions replace-by-from ==="
+echo "=== merge transitions replace per (from, on) ==="
 if python3 - "$REPO_ROOT" <<'PY'
 import sys
 from pathlib import Path
@@ -87,31 +87,32 @@ from workflow_resolve import merge_workflows
 base = {
   "version": 1,
   "skills": {},
-  "entries": {},
   "transitions": [
     {"from": "brainstorming", "on": "approved-architectural", "to": "writing-plans"},
     {"from": "brainstorming", "on": "approved-bounded", "to": None},
+    {"from": "brainstorming", "on": "approved-spike", "to": None},
     {"from": "writing-plans", "on": "inline", "to": "executing-plans"},
   ],
 }
 overlay = {
   "transitions": [
     {"from": "brainstorming", "on": "approved-architectural", "to": "wait"},
-    {"from": "brainstorming", "on": "approved-bounded", "to": None},
-    {"from": "brainstorming", "on": "approved-spike", "to": None},
   ]
 }
 m = merge_workflows(base, overlay)
 bs = [t for t in m["transitions"] if t["from"] == "brainstorming"]
-assert len(bs) == 3
+assert len(bs) == 3, bs
 assert any(t["on"] == "approved-architectural" and t["to"] == "wait" for t in bs)
+assert any(t["on"] == "approved-bounded" and t["to"] is None for t in bs)
+assert any(t["on"] == "approved-spike" and t["to"] is None for t in bs)
 assert any(t["from"] == "writing-plans" for t in m["transitions"])
+assert "entries" not in m
 print("ok")
 PY
 then
-  pass "transitions replace-by-from"
+  pass "transitions replace per (from, on)"
 else
-  fail "transitions replace-by-from"
+  fail "transitions replace per (from, on)"
 fi
 
 echo "=== default.yaml encodes core handoffs ==="
@@ -144,7 +145,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
 from workflow_resolve import WorkflowResolveError, merge_workflows
 
-base = {"version": 1, "skills": {}, "entries": {}, "transitions": []}
+base = {"version": 1, "skills": {}, "transitions": []}
 overlay = {"transitions": [{"on": "approved-architectural", "to": "writing-plans"}]}
 try:
     merge_workflows(base, overlay)
@@ -206,17 +207,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
 from workflow_resolve import WorkflowResolveError, merge_workflows
 
-base = {"version": 1, "skills": {}, "entries": {}, "transitions": []}
+base = {"version": 1, "skills": {}, "transitions": []}
 try:
     merge_workflows(base, {"skills": None})
     raise SystemExit("expected WorkflowResolveError for null skills")
 except WorkflowResolveError as exc:
     assert "skills must be a mapping" in str(exc)
-try:
-    merge_workflows(base, {"entries": ["not", "a", "map"]})
-    raise SystemExit("expected WorkflowResolveError for list entries")
-except WorkflowResolveError as exc:
-    assert "entries must be a mapping" in str(exc)
+ignored = merge_workflows(base, {"entries": {"creative-work": "brainstorming"}})
+assert "entries" not in ignored
+ignored_list = merge_workflows(base, {"entries": ["not", "a", "map"]})
+assert "entries" not in ignored_list
 print("ok")
 PY
 then
@@ -258,7 +258,6 @@ errors = validate_workflow(
     {
         "version": 1,
         "skills": {"brainstorming": {}, "writing-plans": {}},
-        "entries": {},
         "transitions": [
             {"from": "brainstorming", "on": "approved-architectural"},
         ],
@@ -705,7 +704,6 @@ from workflow_resolve import merge_workflows
 base = {
   "version": 1,
   "skills": {},
-  "entries": {},
   "transitions": [
     {"from": "brainstorming", "on": "approved-architectural", "to": "writing-plans"},
     {"from": "brainstorming", "on": "approved-bounded", "to": None},

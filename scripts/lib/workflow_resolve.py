@@ -610,16 +610,16 @@ def outcome_for_exit_code(outcomes: dict[str, str], exit_code: int) -> str:
 
 
 def merge_workflows(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    """Merge overlay onto base using replace-by-logical-id and replace-by-from rules.
+    """Merge overlay onto base using replace-by-logical-id and per-(from, on).
 
+    Ungated overlay transitions replace only the matching ``(from, on)``.
     Gated overlay entries (``when`` present) are progressive enhancement:
     they accumulate as candidates and do not replace ungated baseline edges
-    or registry entries.
+    or registry entries. ``entries`` is an unknown top-level key and is ignored.
     """
     result: dict[str, Any] = {
         "version": base.get("version", 1),
         "skills": dict(base.get("skills") or {}),
-        "entries": dict(base.get("entries") or {}),
         "transitions": list(base.get("transitions") or []),
         "skills_gated": [
             {"id": item["id"], "entry": dict(item["entry"])}
@@ -648,15 +648,6 @@ def merge_workflows(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
             else:
                 result["skills"][skill_id] = entry
 
-    if "entries" in overlay:
-        entries_overlay = overlay["entries"]
-        if not isinstance(entries_overlay, dict):
-            raise WorkflowResolveError(
-                f"overlay entries must be a mapping, got {type(entries_overlay).__name__}"
-            )
-        for key, value in entries_overlay.items():
-            result["entries"][key] = value
-
     if "transitions" in overlay:
         overlay_transitions = overlay["transitions"]
         if not isinstance(overlay_transitions, list):
@@ -673,15 +664,23 @@ def merge_workflows(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
                 raise WorkflowResolveError(
                     f"overlay transition missing valid from: {transition!r}"
                 )
+            on = transition.get("on")
+            if not isinstance(on, str) or not on.strip():
+                raise WorkflowResolveError(
+                    f"overlay transition missing valid on: {transition!r}"
+                )
             if _entry_has_when(transition):
                 gated.append(transition)
             else:
                 ungated.append(transition)
-        overlay_froms = {transition["from"] for transition in ungated}
+        overlay_keys = {
+            (transition["from"], transition["on"]) for transition in ungated
+        }
         result["transitions"] = [
             transition
             for transition in result["transitions"]
-            if transition.get("from") not in overlay_froms
+            if _entry_has_when(transition)
+            or (transition.get("from"), transition.get("on")) not in overlay_keys
         ]
         result["transitions"].extend(ungated)
         result["transitions"].extend(gated)
@@ -996,7 +995,6 @@ def apply_capabilities(
         "version": doc.get("version", 1),
         "capabilities": list(capabilities),
         "skills": skills_out,
-        "entries": dict(doc.get("entries") or {}),
         "transitions": transitions_out,
         "ok": True,
     }
@@ -1295,7 +1293,6 @@ def main(argv: list[str] | None = None) -> int:
         "version": resolved["version"],
         "capabilities": resolved.get("capabilities") or [],
         "skills": resolved["skills"],
-        "entries": resolved["entries"],
         "transitions": resolved["transitions"],
     }
     print(json.dumps(output, indent=2 if args.pretty else None))
