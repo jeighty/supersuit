@@ -346,7 +346,8 @@ cp "$REPO_ROOT/hooks/session-start" "$broken_plugin/hooks/session-start"
 cp "$REPO_ROOT/scripts/resolve-workflow" "$broken_plugin/scripts/resolve-workflow"
 cp "$REPO_ROOT/scripts/lib/"*.py "$broken_plugin/scripts/lib/"
 printf '%s\n' '# stub using-superpowers' > "$broken_plugin/skills/using-superpowers/SKILL.md"
-printf '%s\n' 'version: "broken-bundled"' > "$broken_plugin/workflows/default.yaml"
+mkdir -p "$broken_plugin/workflows/overlays"
+printf '%s\n' 'version: "broken-bundled"' > "$broken_plugin/workflows/overlays/z-broken.yaml"
 broken_home="$(make_home broken-bundled)"
 if output="$(cd "$TEST_ROOT" && env -i PATH="${PATH:-}" HOME="$broken_home" CURSOR_PLUGIN_ROOT="$broken_plugin" CLAUDE_PLUGIN_ROOT="$broken_plugin" bash "$broken_plugin/hooks/session-start" 2>&1)"; then
     if printf '%s' "$output" | \
@@ -393,6 +394,24 @@ else
     echo "    hook exited non-zero"
     echo "$output" | sed 's/^/      /'
 fi
+
+echo "SessionStart leftover default.yaml is ignored"
+
+leftover_plugin="$TEST_ROOT/leftover-default-plugin"
+mkdir -p "$leftover_plugin"
+cp -a "$REPO_ROOT/hooks" "$REPO_ROOT/scripts" "$REPO_ROOT/skills" "$REPO_ROOT/workflows" \
+    "$leftover_plugin/"
+printf '%s\n' 'version: "must-not-read"' > "$leftover_plugin/workflows/default.yaml"
+leftover_home="$(make_home leftover-default)"
+assert_command_output \
+    "leftover default.yaml does not block WORKFLOW_MAP" \
+    "cursor" \
+    "WORKFLOW_MAP"$'\037'"approved-architectural"$'\037'"using-superpowers" \
+    "must-not-read" \
+    "$leftover_home" \
+    CURSOR_PLUGIN_ROOT="$leftover_plugin" \
+    CLAUDE_PLUGIN_ROOT="$leftover_plugin" \
+    bash -c "cd \"$TEST_ROOT\" && bash \"$leftover_plugin/hooks/session-start\""
 
 echo "SessionStart persists real session_id to CLAUDE_ENV_FILE"
 
