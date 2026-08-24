@@ -12,12 +12,13 @@ Config layers live under **`.supersuit/`** (canonical). Leftover `.superpowers/`
 - [Visual-surface capability ladder](superpowers/specs/2026-08-21-visual-surface-ladder-design.md)
 - [Exec-hook host auto-path](superpowers/specs/2026-08-22-exec-hook-auto-path-design.md)
 - [Skill outcome catalog](superpowers/specs/2026-08-23-skill-outcome-catalog-design.md)
+- [Skill-default hops](superpowers/specs/2026-08-23-skill-default-hops-design.md)
 
 ## Layer precedence
 
 Configs merge in order (lowest → highest precedence):
 
-1. **Bundled defaults** — `workflows/default.yaml` in the plugin
+1. **Bundled defaults** — cataloged `metadata.supersuit.next` hops. The resolver starts from in-memory `{version: 1}`; there is no `workflows/default.yaml`.
 2. **Bundled capability overlays** — `workflows/overlays/*.yaml` (sorted by name). Always loaded, including with `--bundled-only`. Gated entries apply only when the matching capability is advertised.
 3. **User overlay** — `~/.supersuit/workflow.yaml`, or `~/.superpowers/workflow.yaml` if the canonical file is absent
 4. **Project overlay** — `.supersuit/workflow.yaml` in the project root, or `.superpowers/workflow.yaml` if the canonical file is absent
@@ -26,9 +27,8 @@ Configs merge in order (lowest → highest precedence):
 
 Later layers override earlier ones:
 
-- **`skills`:** ungated entries replace-by-logical-id (whole entry). `skills.brainstorming: {}` clears a lower-layer alias or path back to identity. Gated entries (`when:` present) accumulate as candidates and do not replace the ungated entry.
-- **`entries`:** per-key replace.
-- **`transitions`:** ungated overlay transitions still replace-by-`from`. Gated overlay transitions (`when:` present) are **appended** so a host-specific enhancement does not drop the baseline edges for that `from`.
+- **`skills`:** ungated entries replace-by-logical-id (whole entry). `skills.brainstorming: {}` clears a lower-layer alias or path back to identity. Gated entries (`when:` present) accumulate as candidates and do not replace the ungated entry. Resolved `skills` is thin: a key appears only via catalog attach (valid `metadata.supersuit.outcomes`) or an overlay remap. Non-cataloged bundled skills stay reachable by logical id.
+- **`transitions`:** ungated overlay transitions replace per `(from, on)` only. Sibling hops for that `from` stay. An overlay `to` replaces that one hop (`null` = continue session, `wait` = ask the human). Gated overlay transitions (`when:` present) are **appended** so a host-specific enhancement does not drop the baseline edges for that `from`.
 
 Missing overlay files are fine. Run the resolver to inspect the merged result:
 
@@ -63,7 +63,7 @@ A registry entry may set only one of `run`/`exec`, `path`, or `skill`.
 
 ## Deterministic run / exec actions
 
-Mechanical steps (ensure a worktree, lay out paths, etc.) can be registry entries that run an allowlisted argv instead of an LLM skill. `workflows/default.yaml` itself has no `run` actions. A bundled capability overlay adds `ensure-worktree` only when `native-worktree` is advertised (see below). Other run actions still belong in user/project overlays.
+Mechanical steps (ensure a worktree, lay out paths, etc.) can be registry entries that run an allowlisted argv instead of an LLM skill. Cataloged identity skills have no `run` actions. A bundled capability overlay adds `ensure-worktree` only when `native-worktree` is advertised (see below). Other run actions still belong in user/project overlays.
 
 ```yaml
 version: 1
@@ -163,7 +163,7 @@ when:
     - native-worktree
 ```
 
-Place `when` on a transition and/or on a `skills.<id>` entry. The bundled `workflows/default.yaml` stays ungated.
+Place `when` on a transition and/or on a `skills.<id>` entry. Capability gates stay on overlay YAML, not on skill frontmatter.
 
 ### How capabilities are detected
 
@@ -375,7 +375,7 @@ when:
     - exec-hook
 ```
 
-`workflows/default.yaml` stays ungated and free of `run` keys.
+Capability overlays stay in `workflows/overlays/*.yaml`. Cataloged identity skills have no `run` keys.
 
 ### What "auto" means per harness
 
@@ -415,15 +415,9 @@ transitions:
   - from: brainstorming
     on: approved-architectural
     to: wait
-  - from: brainstorming
-    on: approved-bounded
-    to: null
-  - from: brainstorming
-    on: approved-spike
-    to: null
 ```
 
-Replace-by-`from` means you must list **all** outcomes for `brainstorming` you want to keep — omitted outcomes fall back to lower layers only for `from` ids not present in the overlay.
+That overlay replaces only `approved-architectural`. `approved-bounded` and `approved-spike` stay `null` from brainstorming’s `next`. `to: wait` means stop and ask the human; `to: null` means continue the session. Do not collapse those.
 
 ## Example: clear a user override back to bundled identity
 
@@ -456,15 +450,18 @@ metadata:
       - approved
       - changes-requested
       - skip
+    next:
+      approved: writing-plans
+      changes-requested: null
 ---
 ```
 
 Rules:
 
 - `metadata.supersuit` must be a mapping. `outcomes` must be a non-empty list of non-empty strings. Duplicates collapse, first-seen order kept.
-- Do not put `to`, `transitions`, or a graph in frontmatter. The overlay owns `(from, on, to)`. Unmapped outcomes stay `wait`.
+- `to` is allowed **only** as a `next` value (logical id, `null`, or `wait`). No `transitions:` list on the skill. No graph of other skills’ edges. Unmapped outcomes stay `wait`. Extra `next` keys warn and are skipped.
 - Keep frontmatter `name` equal to the skill directory name. The catalog key is `name` (else the directory); the harness Skill tool still uses the directory name.
-- A missing `metadata.supersuit` is an ordinary skill (not cataloged). An invalid marker is warned and skipped; resolve continues.
+- A missing `metadata.supersuit` is an ordinary skill (not cataloged). An invalid marker is warned and skipped; resolve continues. `next` cannot catalog a skill by itself.
 
 ### Where skills are found
 
@@ -477,7 +474,7 @@ Scan order, first-seen logical id wins. A root is `<root>/<id>/SKILL.md`, or a p
 
 Not scanned unless listed on `SUPERSUIT_SKILL_PATH`: project-root `skills/`, `.supersuit/skills`, plugin caches, `node_modules`. Do not invent a `.supersuit/skills` install home.
 
-Resolved identity entries gain compact `path` + `outcomes`. Overlay `{ skill: other-name }` copies that other skill’s cataloged outcomes when present. `run` / `exec` entries keep only `run.outcomes`. SessionStart still injects `using-superpowers` and `WORKFLOW_MAP` only — not foreign skill bodies.
+Resolved identity entries gain compact `path` + `outcomes`. Overlay `{ skill: other-name }` copies that other skill’s cataloged outcomes when present. `run` / `exec` entries keep only `run.outcomes`. SessionStart still injects `using-superpowers` and `WORKFLOW_MAP` only — not foreign skill bodies, and not a `next` map. Hops appear as ordinary `transitions`.
 
 ## Validation
 

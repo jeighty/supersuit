@@ -8,6 +8,7 @@ filesystem contract remains `.superpowers/` and related Superpowers paths;
 bootstrap skill folder remains `using-superpowers` (invoked as
 `supersuit:using-superpowers`).
 **Canonical repo:** `jeighty/supersuit`.
+**Later cut:** Superpowers hops now live on cataloged `SKILL.md` `metadata.supersuit.next` — see [skill-default hops](2026-08-23-skill-default-hops-design.md). This file remains the historical graph design (`default.yaml` / `entries` as specified here).
 **Scope:** This fork (`jeighty/supersuit`). Not proposed for upstream
 `obra/superpowers` core without a separate upstream conversation — upstream
 treats the opinionated chain as product, and fork-specific workflow
