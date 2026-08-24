@@ -60,7 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
 from workflow_resolve import merge_workflows
 
-base = {"version": 1, "skills": {"brainstorming": {"path": "/old"}}, "entries": {}, "transitions": []}
+base = {"version": 1, "skills": {"brainstorming": {"path": "/old"}}, "transitions": []}
 user = {"skills": {"brainstorming": {"skill": "alias-a"}}}
 project = {"skills": {"brainstorming": {"path": "/proj"}}}
 m1 = merge_workflows(base, user)
@@ -77,7 +77,7 @@ else
   fail "skills replace-by-id"
 fi
 
-echo "=== merge transitions replace-by-from ==="
+echo "=== merge transitions replace per (from, on) ==="
 if python3 - "$REPO_ROOT" <<'PY'
 import sys
 from pathlib import Path
@@ -87,41 +87,41 @@ from workflow_resolve import merge_workflows
 base = {
   "version": 1,
   "skills": {},
-  "entries": {},
   "transitions": [
     {"from": "brainstorming", "on": "approved-architectural", "to": "writing-plans"},
     {"from": "brainstorming", "on": "approved-bounded", "to": None},
+    {"from": "brainstorming", "on": "approved-spike", "to": None},
     {"from": "writing-plans", "on": "inline", "to": "executing-plans"},
   ],
 }
 overlay = {
   "transitions": [
     {"from": "brainstorming", "on": "approved-architectural", "to": "wait"},
-    {"from": "brainstorming", "on": "approved-bounded", "to": None},
-    {"from": "brainstorming", "on": "approved-spike", "to": None},
   ]
 }
 m = merge_workflows(base, overlay)
 bs = [t for t in m["transitions"] if t["from"] == "brainstorming"]
-assert len(bs) == 3
+assert len(bs) == 3, bs
 assert any(t["on"] == "approved-architectural" and t["to"] == "wait" for t in bs)
+assert any(t["on"] == "approved-bounded" and t["to"] is None for t in bs)
+assert any(t["on"] == "approved-spike" and t["to"] is None for t in bs)
 assert any(t["from"] == "writing-plans" for t in m["transitions"])
+assert "entries" not in m
 print("ok")
 PY
 then
-  pass "transitions replace-by-from"
+  pass "transitions replace per (from, on)"
 else
-  fail "transitions replace-by-from"
+  fail "transitions replace per (from, on)"
 fi
 
-echo "=== default.yaml encodes core handoffs ==="
-if python3 - "$REPO_ROOT" <<'PY'
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
-from workflow_yaml import load_yaml
-doc = load_yaml((Path(sys.argv[1]) / "workflows" / "default.yaml").read_text())
-pairs = {(t["from"], t["on"], t["to"]) for t in doc["transitions"]}
+echo "=== bundled hops come from cataloged SKILL.md next ==="
+mkdir -p "$TEST_ROOT/empty-proj"
+if OUT="$("$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" --project-root "$TEST_ROOT/empty-proj" --user-home "$TEST_HOME" --bundled-only)" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+pairs={(t["from"], t["on"], t["to"]) for t in d["transitions"]}
 assert ("brainstorming", "approved-architectural", "writing-plans") in pairs
 assert ("brainstorming", "approved-bounded", None) in pairs
 assert ("brainstorming", "approved-spike", None) in pairs
@@ -129,12 +129,25 @@ assert ("writing-plans", "subagent-driven", "subagent-driven-development") in pa
 assert ("writing-plans", "inline", "executing-plans") in pairs
 assert ("subagent-driven-development", "complete", "finishing-a-development-branch") in pairs
 assert ("executing-plans", "complete", "finishing-a-development-branch") in pairs
-print("ok")
-PY
-then
-  pass "default handoffs"
+assert "entries" not in d
+assert "test-driven-development" not in d["skills"]
+assert "next" not in d["skills"].get("brainstorming", {})
+'; then
+  pass "bundled hops come from cataloged SKILL.md next"
 else
-  fail "default handoffs"
+  fail "bundled hops come from cataloged SKILL.md next"
+fi
+
+echo "=== leftover default.yaml is not read ==="
+POISON="$TEST_ROOT/poison-plugin"
+mkdir -p "$POISON"
+cp -a "$REPO_ROOT/scripts" "$REPO_ROOT/skills" "$REPO_ROOT/workflows" "$POISON/"
+printf '%s\n' 'version: "must-not-read"' > "$POISON/workflows/default.yaml"
+if OUT="$("$POISON/scripts/resolve-workflow" --plugin-root "$POISON" --project-root "$TEST_ROOT/empty-proj" --user-home "$TEST_HOME" --bundled-only)" &&
+  echo "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["version"]==1; assert any(t["from"]=="brainstorming" for t in d["transitions"])'; then
+  pass "leftover default.yaml is not read"
+else
+  fail "leftover default.yaml is not read"
 fi
 
 echo "=== merge rejects transition missing from ==="
@@ -144,7 +157,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
 from workflow_resolve import WorkflowResolveError, merge_workflows
 
-base = {"version": 1, "skills": {}, "entries": {}, "transitions": []}
+base = {"version": 1, "skills": {}, "transitions": []}
 overlay = {"transitions": [{"on": "approved-architectural", "to": "writing-plans"}]}
 try:
     merge_workflows(base, overlay)
@@ -206,17 +219,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
 from workflow_resolve import WorkflowResolveError, merge_workflows
 
-base = {"version": 1, "skills": {}, "entries": {}, "transitions": []}
+base = {"version": 1, "skills": {}, "transitions": []}
 try:
     merge_workflows(base, {"skills": None})
     raise SystemExit("expected WorkflowResolveError for null skills")
 except WorkflowResolveError as exc:
     assert "skills must be a mapping" in str(exc)
-try:
-    merge_workflows(base, {"entries": ["not", "a", "map"]})
-    raise SystemExit("expected WorkflowResolveError for list entries")
-except WorkflowResolveError as exc:
-    assert "entries must be a mapping" in str(exc)
+ignored = merge_workflows(base, {"entries": {"creative-work": "brainstorming"}})
+assert "entries" not in ignored
+ignored_list = merge_workflows(base, {"entries": ["not", "a", "map"]})
+assert "entries" not in ignored_list
 print("ok")
 PY
 then
@@ -258,7 +270,6 @@ errors = validate_workflow(
     {
         "version": 1,
         "skills": {"brainstorming": {}, "writing-plans": {}},
-        "entries": {},
         "transitions": [
             {"from": "brainstorming", "on": "approved-architectural"},
         ],
@@ -464,22 +475,34 @@ else
   fi
 fi
 
-echo "=== default.yaml has no run actions ==="
+echo "=== default.yaml is gone and cataloged identity skills have no run ==="
 if python3 - "$REPO_ROOT" <<'PY'
-import sys
+import json, subprocess, sys
 from pathlib import Path
-sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
-from workflow_yaml import load_yaml
-doc = load_yaml((Path(sys.argv[1]) / "workflows" / "default.yaml").read_text())
-for skill_id, entry in (doc.get("skills") or {}).items():
-    assert isinstance(entry, dict)
+root = Path(sys.argv[1])
+assert not (root / "workflows" / "default.yaml").exists()
+out = subprocess.check_output(
+    [
+        str(root / "scripts" / "resolve-workflow"),
+        "--plugin-root", str(root),
+        "--project-root", str(root),
+        "--user-home", str(Path(sys.argv[1])),
+        "--bundled-only",
+    ],
+    text=True,
+)
+d = json.loads(out)
+for skill_id in ("brainstorming", "writing-plans", "subagent-driven-development", "executing-plans"):
+    entry = d["skills"][skill_id]
     assert "run" not in entry and "exec" not in entry, skill_id
+    assert "when" not in entry, skill_id
+    assert "next" not in entry, skill_id
 print("ok")
 PY
 then
-  pass "default.yaml has no run actions"
+  pass "default.yaml is gone and cataloged identity skills have no run"
 else
-  fail "default.yaml has no run actions"
+  fail "default.yaml is gone and cataloged identity skills have no run"
 fi
 
 echo "=== run-workflow-action complete/failed ==="
@@ -675,24 +698,17 @@ else
   fail "CLI still reads user ~/.superpowers fallback"
 fi
 
-echo "=== default.yaml has no capability gates ==="
-if python3 - "$REPO_ROOT" <<'PY'
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
-from workflow_yaml import load_yaml
-doc = load_yaml((Path(sys.argv[1]) / "workflows" / "default.yaml").read_text())
-for skill_id, entry in (doc.get("skills") or {}).items():
-    assert isinstance(entry, dict)
-    assert "when" not in entry, skill_id
-for transition in doc.get("transitions") or []:
-    assert "when" not in transition, transition
-print("ok")
-PY
-then
-  pass "default.yaml has no capability gates"
+echo "=== bundled-only emitted transitions have no when ==="
+if OUT="$("$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" --project-root "$TEST_ROOT/empty-proj" --user-home "$TEST_HOME" --bundled-only)" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for t in d["transitions"]:
+    assert "when" not in t, t
+'; then
+  pass "bundled-only emitted transitions have no when"
 else
-  fail "default.yaml has no capability gates"
+  fail "bundled-only emitted transitions have no when"
 fi
 
 echo "=== gated overlay transitions append without replace-by-from ==="
@@ -705,7 +721,6 @@ from workflow_resolve import merge_workflows
 base = {
   "version": 1,
   "skills": {},
-  "entries": {},
   "transitions": [
     {"from": "brainstorming", "on": "approved-architectural", "to": "writing-plans"},
     {"from": "brainstorming", "on": "approved-bounded", "to": None},
@@ -1611,6 +1626,483 @@ assert e["run"]["outcomes"]["0"]=="complete"
   pass "run entries do not get skill-frontmatter outcomes"
 else
   fail "run entries do not get skill-frontmatter outcomes"
+fi
+
+echo "=== exec remap of a cataloged skill contributes no next hops ==="
+EXEC_HOP="$TEST_ROOT/exec-no-hops"
+mkdir -p "$EXEC_HOP/proj/.supersuit" "$EXEC_HOP/proj/scripts" "$EXEC_HOP/home" \
+  "$EXEC_HOP/pack/exec-review"
+cat > "$EXEC_HOP/proj/scripts/ensure-fixture.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$EXEC_HOP/proj/scripts/ensure-fixture.sh"
+cat > "$EXEC_HOP/pack/exec-review/SKILL.md" <<'EOF'
+---
+name: exec-review
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - skip
+    next:
+      approved: finishing-a-development-branch
+      skip: null
+---
+should not attach hops
+EOF
+cat > "$EXEC_HOP/proj/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+skills:
+  exec-review:
+    exec:
+      argv:
+        - scripts/ensure-fixture.sh
+      allow:
+        - project
+EOF
+if OUT="$(cd "$EXEC_HOP/proj" && SUPERSUIT_SKILL_PATH="$EXEC_HOP/pack" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$EXEC_HOP/proj" --user-home "$EXEC_HOP/home")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+e=d["skills"]["exec-review"]
+assert "run" in e
+assert "exec" not in e
+assert e.get("outcomes") != ["approved", "skip"]
+assert e["run"]["outcomes"]["0"]=="complete"
+assert not any(
+    t.get("from")=="exec-review" and t.get("on")=="approved"
+    for t in d["transitions"]
+), d["transitions"]
+assert not any(
+    t.get("from")=="exec-review" and t.get("on")=="skip"
+    for t in d["transitions"]
+), d["transitions"]
+'; then
+  pass "exec remap of a cataloged skill contributes no next hops"
+else
+  fail "exec remap of a cataloged skill contributes no next hops"
+fi
+
+echo "=== parse_skill_next helpers ==="
+if python3 - "$REPO_ROOT" <<'PY'
+import io
+import sys
+from contextlib import redirect_stderr
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
+from workflow_resolve import extract_skill_frontmatter, parse_skill_next
+
+outcomes = ["approved-architectural", "approved-bounded", "approved-spike"]
+
+fm = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    outcomes:\n"
+    "      - approved-architectural\n      - approved-bounded\n"
+    "      - approved-spike\n    next:\n"
+    "      approved-architectural: writing-plans\n"
+    "      approved-bounded: null\n      approved-spike: null\n"
+    "      typo-outcome: writing-plans\n    extra: 1\n"
+    "to: should-not-count\ntransitions:\n  - from: other\n---\n"
+)
+err = io.StringIO()
+with redirect_stderr(err):
+    hops = parse_skill_next(fm, outcomes, source="fixture.md")
+assert hops == {
+    "approved-architectural": "writing-plans",
+    "approved-bounded": None,
+    "approved-spike": None,
+}
+assert "typo-outcome" not in hops
+assert "skipping next hop 'typo-outcome' (not in outcomes)" in err.getvalue()
+assert "fixture.md" in err.getvalue()
+
+fm_bad = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    outcomes:\n      - done\n    next: yes\n---\n"
+)
+err = io.StringIO()
+with redirect_stderr(err):
+    hops = parse_skill_next(fm_bad, ["done"], source="bad.md")
+assert hops == {}
+assert "ignoring metadata.supersuit.next (not a mapping)" in err.getvalue()
+
+fm_none = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    outcomes:\n      - done\n---\n"
+)
+assert parse_skill_next(fm_none, ["done"]) == {}
+print("ok")
+PY
+then
+  pass "parse_skill_next helpers"
+else
+  fail "parse_skill_next helpers"
+fi
+
+echo "=== extra next key warns and skips that hop ==="
+EXTRA="$TEST_ROOT/extra-next"
+mkdir -p "$EXTRA/proj" "$EXTRA/home" "$EXTRA/pack/extra-next"
+cat > "$EXTRA/pack/extra-next/SKILL.md" <<'EOF'
+---
+name: extra-next
+metadata:
+  supersuit:
+    outcomes:
+      - done
+      - skip
+    next:
+      done: wait
+      typo: wait
+---
+body
+EOF
+set +e
+OUT="$(cd "$EXTRA/proj" && SUPERSUIT_SKILL_PATH="$EXTRA/pack" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$EXTRA/proj" --user-home "$EXTRA/home" --bundled-only \
+  2>"$TEST_ROOT/extra-next.err")"
+status=$?
+set -e
+if [[ "$status" -eq 0 ]] &&
+  echo "$OUT" | python3 -c '
+import json,sys
+from pathlib import Path
+sys.path.insert(0, str(Path("'"$REPO_ROOT"'") / "scripts" / "lib"))
+from workflow_resolve import lookup_transition_to
+d=json.load(sys.stdin)
+found, to = lookup_transition_to(d, "extra-next", "done")
+assert found and to == "wait"
+found, _ = lookup_transition_to(d, "extra-next", "typo")
+assert not found
+' &&
+  grep -q "skipping next hop 'typo' (not in outcomes)" "$TEST_ROOT/extra-next.err"; then
+  pass "extra next key warns and skips that hop"
+else
+  fail "extra next key warns and skips that hop"
+  echo "$OUT" | sed 's/^/    /'
+  sed 's/^/    /' "$TEST_ROOT/extra-next.err"
+fi
+
+echo "=== missing next key stays wait ==="
+MISS="$TEST_ROOT/missing-next"
+mkdir -p "$MISS/proj" "$MISS/home" "$MISS/pack/missing-next"
+cat > "$MISS/pack/missing-next/SKILL.md" <<'EOF'
+---
+name: missing-next
+metadata:
+  supersuit:
+    outcomes:
+      - done
+      - other
+    next:
+      done: null
+---
+body
+EOF
+if OUT="$(cd "$MISS/proj" && SUPERSUIT_SKILL_PATH="$MISS/pack" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$MISS/proj" --user-home "$MISS/home" --bundled-only)" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+from pathlib import Path
+sys.path.insert(0, str(Path("'"$REPO_ROOT"'") / "scripts" / "lib"))
+from workflow_resolve import lookup_transition_to
+d=json.load(sys.stdin)
+found, to = lookup_transition_to(d, "missing-next", "done")
+assert found and to is None
+found, to = lookup_transition_to(d, "missing-next", "other")
+assert not found
+'; then
+  pass "missing next key stays wait"
+else
+  fail "missing next key stays wait"
+fi
+
+echo "=== unknown next to is a resolve error ==="
+UNK="$TEST_ROOT/unknown-next"
+mkdir -p "$UNK/proj" "$UNK/home" "$UNK/pack/unknown-next"
+cat > "$UNK/pack/unknown-next/SKILL.md" <<'EOF'
+---
+name: unknown-next
+metadata:
+  supersuit:
+    outcomes:
+      - done
+    next:
+      done: not-a-skill
+---
+body
+EOF
+if SUPERSUIT_SKILL_PATH="$UNK/pack" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$UNK/proj" --user-home "$UNK/home" --bundled-only \
+  >/dev/null 2>"$TEST_ROOT/unknown-next.err"; then
+  fail "unknown next to is a resolve error"
+else
+  if grep -qi 'unknown logical id' "$TEST_ROOT/unknown-next.err"; then
+    pass "unknown next to is a resolve error"
+  else
+    fail "unknown next to is a resolve error"
+    sed 's/^/    /' "$TEST_ROOT/unknown-next.err"
+  fi
+fi
+
+echo "=== next without outcomes does not catalog ==="
+NOOUT="$TEST_ROOT/next-only"
+mkdir -p "$NOOUT/proj" "$NOOUT/home/.claude/skills/next-only"
+cat > "$NOOUT/home/.claude/skills/next-only/SKILL.md" <<'EOF'
+---
+name: next-only
+metadata:
+  supersuit:
+    next:
+      done: wait
+---
+body
+EOF
+set +e
+OUT="$(cd "$NOOUT/proj" && \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$NOOUT/proj" --user-home "$NOOUT/home" --bundled-only \
+  2>"$TEST_ROOT/next-only.err")"
+status=$?
+set -e
+if [[ "$status" -eq 0 ]] &&
+  echo "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert "next-only" not in d["skills"]' &&
+  grep -qi 'invalid metadata.supersuit.outcomes' "$TEST_ROOT/next-only.err"; then
+  pass "next without outcomes does not catalog"
+else
+  fail "next without outcomes does not catalog"
+  echo "$OUT" | sed 's/^/    /'
+  sed 's/^/    /' "$TEST_ROOT/next-only.err"
+fi
+
+echo "=== overlay replace architectural with wait keeps skill nulls ==="
+WAIT="$TEST_ROOT/replace-wait"
+mkdir -p "$WAIT/proj/.supersuit" "$WAIT/home"
+cat > "$WAIT/proj/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+transitions:
+  - from: brainstorming
+    on: approved-architectural
+    to: wait
+EOF
+if OUT="$(cd "$WAIT/proj" && \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$WAIT/proj" --user-home "$WAIT/home")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+pairs={(t["from"], t["on"], t["to"]) for t in d["transitions"]}
+assert ("brainstorming", "approved-architectural", "wait") in pairs
+assert ("brainstorming", "approved-bounded", None) in pairs
+assert ("brainstorming", "approved-spike", None) in pairs
+'; then
+  pass "overlay replace architectural with wait keeps skill nulls"
+else
+  fail "overlay replace architectural with wait keeps skill nulls"
+fi
+
+echo "=== overlay to null stays continue-session ==="
+NULL="$TEST_ROOT/replace-null"
+mkdir -p "$NULL/proj/.supersuit" "$NULL/home"
+cat > "$NULL/proj/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+transitions:
+  - from: brainstorming
+    on: approved-architectural
+    to: null
+EOF
+if OUT="$(cd "$NULL/proj" && \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$NULL/proj" --user-home "$NULL/home")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+t=[x for x in d["transitions"] if x["from"]=="brainstorming" and x["on"]=="approved-architectural"][0]
+assert t["to"] is None
+assert t["to"] != "wait"
+'; then
+  pass "overlay to null stays continue-session"
+else
+  fail "overlay to null stays continue-session"
+fi
+
+echo "=== foreign cataloged next uses the same rules ==="
+FOR="$TEST_ROOT/foreign-next"
+mkdir -p "$FOR/proj" "$FOR/home" "$FOR/pack/foreign-review"
+cat > "$FOR/pack/foreign-review/SKILL.md" <<'EOF'
+---
+name: foreign-review
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - skip
+    next:
+      approved: finishing-a-development-branch
+      skip: null
+---
+FOREIGN_BODY
+EOF
+if OUT="$(cd "$FOR/proj" && SUPERSUIT_SKILL_PATH="$FOR/pack" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$FOR/proj" --user-home "$FOR/home" --bundled-only)" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+pairs={(t["from"], t["on"], t["to"]) for t in d["transitions"]}
+assert ("foreign-review", "approved", "finishing-a-development-branch") in pairs
+assert ("foreign-review", "skip", None) in pairs
+assert d["skills"]["foreign-review"]["outcomes"]==["approved","skip"]
+assert "next" not in d["skills"]["foreign-review"]
+'; then
+  pass "foreign cataloged next uses the same rules"
+else
+  fail "foreign cataloged next uses the same rules"
+fi
+
+echo "=== remapped path next uses remapped from ==="
+REMAP="$TEST_ROOT/remap-from"
+mkdir -p "$REMAP/proj/.supersuit" "$REMAP/home" "$REMAP/custom-brainstorm"
+cat > "$REMAP/custom-brainstorm/SKILL.md" <<'EOF'
+---
+name: custom-brainstorm
+metadata:
+  supersuit:
+    outcomes:
+      - approved-architectural
+      - approved-bounded
+      - approved-spike
+    next:
+      approved-architectural: wait
+      approved-bounded: null
+      approved-spike: null
+---
+custom
+EOF
+cat > "$REMAP/proj/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+skills:
+  brainstorming:
+    path: ../custom-brainstorm
+EOF
+if OUT="$(cd "$REMAP/proj" && \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$REMAP/proj" --user-home "$REMAP/home")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+t=[x for x in d["transitions"] if x["from"]=="brainstorming" and x["on"]=="approved-architectural"][0]
+assert t["to"]=="wait"
+assert not any(x["from"]=="custom-brainstorm" for x in d["transitions"])
+'; then
+  pass "remapped path next uses remapped from"
+else
+  fail "remapped path next uses remapped from"
+fi
+
+echo "=== non-cataloged bundled skill is reachable by id ==="
+REACH="$TEST_ROOT/reachable-tdd"
+mkdir -p "$REACH/proj/.supersuit" "$REACH/home" "$REACH/custom-tdd"
+printf '%s\n' '---' 'name: custom-tdd' '---' 'body' > "$REACH/custom-tdd/SKILL.md"
+cat > "$REACH/proj/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+transitions:
+  - from: writing-plans
+    on: inline
+    to: test-driven-development
+EOF
+if OUT="$(cd "$REACH/proj" && \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$REACH/proj" --user-home "$REACH/home")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+assert "test-driven-development" not in d["skills"]
+t=[x for x in d["transitions"] if x["from"]=="writing-plans" and x["on"]=="inline"][0]
+assert t["to"]=="test-driven-development"
+'; then
+  pass "non-cataloged bundled skill is a valid to and absent from skills"
+else
+  fail "non-cataloged bundled skill is a valid to and absent from skills"
+fi
+cat > "$REACH/proj/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+skills:
+  test-driven-development:
+    path: ../custom-tdd
+EOF
+if OUT="$(cd "$REACH/proj" && \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$REACH/proj" --user-home "$REACH/home")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+assert d["skills"]["test-driven-development"]["path"].endswith("custom-tdd")
+'; then
+  pass "overlay may remap a non-cataloged bundled skill"
+else
+  fail "overlay may remap a non-cataloged bundled skill"
+fi
+
+echo "=== no duplicate ungated (from, on) before capability filter ==="
+if python3 - "$REPO_ROOT" "$TEST_HOME" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
+from workflow_resolve import (
+    bundled_overlay_paths,
+    discover_known_skills,
+    discover_skill_catalog,
+    load_workflow_mapping,
+    materialize_skill_hops,
+    merge_workflows,
+    validate_workflow,
+)
+plugin = Path(sys.argv[1])
+home = Path(sys.argv[2])
+catalog = discover_skill_catalog(
+    plugin_root=plugin, project_root=plugin, user_home=home, environ={},
+)
+merged = {"version": 1}
+overlays = [
+    load_workflow_mapping(path, label=path.name)
+    for path in bundled_overlay_paths(plugin)
+]
+for overlay in overlays:
+    merged = merge_workflows(merged, {k: v for k, v in overlay.items() if k != "transitions"})
+materialize_skill_hops(merged, catalog, project_root=plugin)
+for overlay in overlays:
+    merged = merge_workflows(
+        merged, {k: overlay[k] for k in ("version", "transitions") if k in overlay}
+    )
+ungated = [
+    (t["from"], t["on"])
+    for t in merged["transitions"]
+    if not t.get("when")
+]
+assert len(ungated) == len(set(ungated)), ungated
+assert any(
+    t.get("from") == "brainstorming"
+    and t.get("on") == "approved-architectural"
+    and t.get("when")
+    for t in merged["transitions"]
+)
+errors = validate_workflow(
+    merged,
+    project_root=plugin,
+    bundled_skills=set(discover_known_skills(plugin)),
+    plugin_root=plugin,
+    extra_known_ids=set(catalog),
+)
+assert errors == [], errors
+print("ok")
+PY
+then
+  pass "no duplicate ungated (from, on) before capability filter"
+else
+  fail "no duplicate ungated (from, on) before capability filter"
 fi
 
 if [[ "$FAILURES" -gt 0 ]]; then

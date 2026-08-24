@@ -300,6 +300,46 @@ def classify_skill_marker(
     return "ok", outcomes
 
 
+def parse_skill_next(
+    frontmatter: dict[str, Any] | None,
+    outcomes: list[str],
+    *,
+    source: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return filtered skill-default hops from metadata.supersuit.next.
+
+    Extra keys warn and are skipped. A non-mapping ``next`` warns and is
+    ignored. Unknown ``to`` values are kept so validate_workflow can raise.
+    """
+    if not isinstance(frontmatter, dict):
+        return {}
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    supersuit = metadata.get("supersuit")
+    if not isinstance(supersuit, dict) or "next" not in supersuit:
+        return {}
+    raw = supersuit.get("next")
+    label = f": {source}" if source is not None else ""
+    if not isinstance(raw, dict):
+        print(
+            f"warning: ignoring metadata.supersuit.next (not a mapping){label}",
+            file=sys.stderr,
+        )
+        return {}
+    allowed = set(outcomes)
+    hops: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key not in allowed:
+            print(
+                f"warning: skipping next hop {key!r} (not in outcomes){label}",
+                file=sys.stderr,
+            )
+            continue
+        hops[key] = value
+    return hops
+
+
 def skill_logical_id(
     frontmatter: dict[str, Any] | None, skill_dir: Path
 ) -> str:
@@ -427,6 +467,9 @@ def discover_skill_catalog(
             catalog[logical_id] = {
                 "path": str(skill_md.parent.resolve()),
                 "outcomes": list(outcomes),
+                "next": parse_skill_next(
+                    frontmatter, outcomes, source=skill_md
+                ),
             }
     return catalog
 
@@ -570,16 +613,16 @@ def outcome_for_exit_code(outcomes: dict[str, str], exit_code: int) -> str:
 
 
 def merge_workflows(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    """Merge overlay onto base using replace-by-logical-id and replace-by-from rules.
+    """Merge overlay onto base using replace-by-logical-id and per-(from, on).
 
+    Ungated overlay transitions replace only the matching ``(from, on)``.
     Gated overlay entries (``when`` present) are progressive enhancement:
     they accumulate as candidates and do not replace ungated baseline edges
-    or registry entries.
+    or registry entries. ``entries`` is an unknown top-level key and is ignored.
     """
     result: dict[str, Any] = {
         "version": base.get("version", 1),
         "skills": dict(base.get("skills") or {}),
-        "entries": dict(base.get("entries") or {}),
         "transitions": list(base.get("transitions") or []),
         "skills_gated": [
             {"id": item["id"], "entry": dict(item["entry"])}
@@ -608,15 +651,6 @@ def merge_workflows(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
             else:
                 result["skills"][skill_id] = entry
 
-    if "entries" in overlay:
-        entries_overlay = overlay["entries"]
-        if not isinstance(entries_overlay, dict):
-            raise WorkflowResolveError(
-                f"overlay entries must be a mapping, got {type(entries_overlay).__name__}"
-            )
-        for key, value in entries_overlay.items():
-            result["entries"][key] = value
-
     if "transitions" in overlay:
         overlay_transitions = overlay["transitions"]
         if not isinstance(overlay_transitions, list):
@@ -633,15 +667,23 @@ def merge_workflows(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
                 raise WorkflowResolveError(
                     f"overlay transition missing valid from: {transition!r}"
                 )
+            on = transition.get("on")
+            if not isinstance(on, str) or not on.strip():
+                raise WorkflowResolveError(
+                    f"overlay transition missing valid on: {transition!r}"
+                )
             if _entry_has_when(transition):
                 gated.append(transition)
             else:
                 ungated.append(transition)
-        overlay_froms = {transition["from"] for transition in ungated}
+        overlay_keys = {
+            (transition["from"], transition["on"]) for transition in ungated
+        }
         result["transitions"] = [
             transition
             for transition in result["transitions"]
-            if transition.get("from") not in overlay_froms
+            if _entry_has_when(transition)
+            or (transition.get("from"), transition.get("on")) not in overlay_keys
         ]
         result["transitions"].extend(ungated)
         result["transitions"].extend(gated)
@@ -916,10 +958,6 @@ def apply_capabilities(
         )
         skills_out[skill_id] = _strip_when(chosen)
 
-    for skill_id in set(bundled_skills) | set(extra_known_ids or ()):
-        if skill_id not in skills_out:
-            skills_out[skill_id] = {}
-
     grouped: dict[tuple[str, str], list[tuple[frozenset[str] | None, dict[str, Any]]]] = {}
     for transition in doc.get("transitions") or []:
         if not isinstance(transition, dict):
@@ -956,7 +994,6 @@ def apply_capabilities(
         "version": doc.get("version", 1),
         "capabilities": list(capabilities),
         "skills": skills_out,
-        "entries": dict(doc.get("entries") or {}),
         "transitions": transitions_out,
         "ok": True,
     }
@@ -994,6 +1031,86 @@ def outcomes_from_skill_dir(skill_dir: Path) -> list[str] | None:
     return list(outcomes)
 
 
+def next_from_skill_dir(skill_dir: Path) -> dict[str, Any] | None:
+    """Read a directory's SKILL.md next map. None if the file is not cataloged."""
+    skill_md = skill_dir / "SKILL.md"
+    if not is_regular_skill_md(skill_md):
+        return None
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        frontmatter = extract_skill_frontmatter(text)
+    except FrontmatterParseError:
+        if looks_like_supersuit_pocket(frontmatter_block(text) or ""):
+            print(
+                "warning: skipping SKILL.md with invalid "
+                f"metadata.supersuit.outcomes: {skill_md}",
+                file=sys.stderr,
+            )
+        return None
+    status, outcomes = classify_skill_marker(frontmatter)
+    if status == "invalid":
+        print(
+            "warning: skipping SKILL.md with invalid "
+            f"metadata.supersuit.outcomes: {skill_md}",
+            file=sys.stderr,
+        )
+        return None
+    if status != "ok" or outcomes is None:
+        return None
+    return parse_skill_next(frontmatter, outcomes, source=skill_md)
+
+
+def winning_skill_next(
+    skill_id: str,
+    entry: dict[str, Any],
+    catalog: dict[str, dict[str, Any]],
+    *,
+    project_root: Path,
+) -> dict[str, Any] | None:
+    """Return next hops from the winning SKILL.md, or None for run/exec."""
+    if "run" in entry or "exec" in entry:
+        return None
+    if "path" in entry:
+        path_value = entry.get("path")
+        if isinstance(path_value, str) and path_value.strip():
+            return next_from_skill_dir(
+                _resolve_skill_path(path_value, project_root)
+            )
+        return None
+    if "skill" in entry:
+        alias = entry.get("skill")
+        info = catalog.get(alias) if isinstance(alias, str) else None
+        return dict(info["next"]) if info else None
+    info = catalog.get(skill_id)
+    return dict(info["next"]) if info else None
+
+
+def materialize_skill_hops(
+    merged: dict[str, Any],
+    catalog: dict[str, dict[str, Any]],
+    *,
+    project_root: Path,
+) -> None:
+    """Append ungated skill-default hops. Implicit from is the resolved id."""
+    skills = merged.get("skills") or {}
+    hops: list[dict[str, Any]] = []
+    for skill_id in sorted(set(catalog) | set(skills)):
+        entry = skills.get(skill_id) or {}
+        if not isinstance(entry, dict):
+            continue
+        nxt = winning_skill_next(
+            skill_id, entry, catalog, project_root=project_root
+        )
+        if not nxt:
+            continue
+        for on, to in nxt.items():
+            hops.append({"from": skill_id, "on": on, "to": to})
+    merged["transitions"] = hops + list(merged.get("transitions") or [])
+
+
 def attach_catalog_outcomes(
     skills: dict[str, Any],
     catalog: dict[str, dict[str, Any]],
@@ -1007,7 +1124,7 @@ def attach_catalog_outcomes(
     for skill_id, entry in list(skills.items()):
         if not isinstance(entry, dict):
             continue
-        if "run" in entry:
+        if "run" in entry or "exec" in entry:
             continue
         if "path" in entry:
             path_value = entry.get("path")
@@ -1041,35 +1158,44 @@ def resolve_workflow(
 ) -> dict[str, Any]:
     """Load, merge, validate, and return the resolved workflow graph."""
     env = environ if environ is not None else os.environ
-    default_path = plugin_root / "workflows" / "default.yaml"
-    merged = load_workflow_mapping(default_path, label="bundled workflow")
-
-    for overlay_path in bundled_overlay_paths(plugin_root):
-        overlay_doc = load_workflow_mapping(
-            overlay_path, label=f"bundled overlay {overlay_path.name}"
-        )
-        merged = merge_workflows(merged, overlay_doc)
-
-    if not bundled_only:
-        user_path = overlay_workflow_path(user_home)
-        if user_path is not None:
-            user_doc = load_workflow_mapping(user_path, label="user workflow")
-            merged = merge_workflows(merged, user_doc)
-
-        project_path = overlay_workflow_path(project_root)
-        if project_path is not None:
-            project_doc = load_workflow_mapping(
-                project_path, label="project workflow"
-            )
-            merged = merge_workflows(merged, project_doc)
-
-    bundled_skills = set(discover_known_skills(plugin_root))
     catalog = discover_skill_catalog(
         plugin_root=plugin_root,
         project_root=project_root,
         user_home=user_home,
         environ=env,
     )
+
+    overlays: list[dict[str, Any]] = []
+    for overlay_path in bundled_overlay_paths(plugin_root):
+        overlays.append(
+            load_workflow_mapping(
+                overlay_path, label=f"bundled overlay {overlay_path.name}"
+            )
+        )
+    if not bundled_only:
+        user_path = overlay_workflow_path(user_home)
+        if user_path is not None:
+            overlays.append(
+                load_workflow_mapping(user_path, label="user workflow")
+            )
+        project_path = overlay_workflow_path(project_root)
+        if project_path is not None:
+            overlays.append(
+                load_workflow_mapping(project_path, label="project workflow")
+            )
+
+    merged: dict[str, Any] = {"version": 1}
+    for overlay in overlays:
+        skills_layer = {k: v for k, v in overlay.items() if k != "transitions"}
+        merged = merge_workflows(merged, skills_layer)
+    materialize_skill_hops(merged, catalog, project_root=project_root)
+    for overlay in overlays:
+        trans_layer = {
+            k: overlay[k] for k in ("version", "transitions") if k in overlay
+        }
+        merged = merge_workflows(merged, trans_layer)
+
+    bundled_skills = set(discover_known_skills(plugin_root))
     extra_known_ids = set(catalog)
     errors = validate_workflow(
         merged,
@@ -1255,7 +1381,6 @@ def main(argv: list[str] | None = None) -> int:
         "version": resolved["version"],
         "capabilities": resolved.get("capabilities") or [],
         "skills": resolved["skills"],
-        "entries": resolved["entries"],
         "transitions": resolved["transitions"],
     }
     print(json.dumps(output, indent=2 if args.pretty else None))

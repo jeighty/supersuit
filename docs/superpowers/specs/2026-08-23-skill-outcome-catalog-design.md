@@ -21,7 +21,7 @@ Shipping a default `workflow.yaml` per skill is the wrong fix: ungated overlays 
 |----------|------|
 | Primary | A skill opts in by listing outcomes in frontmatter. The resolver catalogs those skills. |
 | Discovery | Find opted-in `SKILL.md` files on `SUPERSUIT_SKILL_PATH` plus a small table of dirs harnesses already use. |
-| Safety | Catalog, not inject. No extra skill prose in SessionStart. No `to` pointers in frontmatter. |
+| Safety | Catalog, not inject. No extra skill prose in SessionStart. `to` is allowed only inside `metadata.supersuit.next`. |
 | Callable | Skills stay where the harness already loads them. Do not invent `.supersuit/skills`. |
 
 ## Non-goals
@@ -30,7 +30,7 @@ Shipping a default `workflow.yaml` per skill is the wrong fix: ungated overlays 
 - Walking plugin caches, `node_modules`, or inferring capabilities from product names / skill paths.
 - A “list loaded skills” RPC. Almost no Shape A host exposes one; in-process hosts pass paths instead.
 - Making `.supersuit/skills` a harness skill root.
-- Changing `workflows/default.yaml` shape or adding `run` keys there.
+- Changing bundled capability overlay YAML shape or adding `run` keys on cataloged identity skills. Superpowers hops live on `SKILL.md` `next` — see [skill-default hops](2026-08-23-skill-default-hops-design.md).
 - Rewriting skill bodies or Red Flags tables.
 - Auto-wiring discovered skills into the Superpowers pipeline.
 
@@ -40,7 +40,7 @@ These two `outcomes` fields are different. Do not mix them.
 
 | Term | Where | Meaning |
 |------|--------|---------|
-| Skill frontmatter `outcomes` | `SKILL.md` YAML: `metadata.supersuit.outcomes` | Completion **labels the skill emits** when it finishes (for example `approved`, `changes-requested`). The catalog copies this list onto the resolved registry entry. The map / overlay still owns `(from, on, to)`. |
+| Skill frontmatter `outcomes` | `SKILL.md` YAML: `metadata.supersuit.outcomes` | Completion **labels the skill emits** when it finishes (for example `approved`, `changes-requested`). The catalog copies this list onto the resolved registry entry. Optional `next` may name `to` for edges **from this skill only** — see [skill-default hops](2026-08-23-skill-default-hops-design.md). |
 | `skills.<id>.run.outcomes` | Overlay / registry `run` / `exec` block | **Exit-code → label** for a deterministic action. Keys are exit codes (`0`, other integers) or `nonzero`. Defaults: `0 → complete`, `nonzero → failed`. See [workflow-config.md](../../workflow-config.md) (Deterministic run / exec actions) and [run/exec design](2026-08-17-workflow-run-actions-design.md). |
 
 A `run` / `exec` registry entry has no `SKILL.md`. Do not attach skill-frontmatter `outcomes` to it. Its labels come only from `run.outcomes`.
@@ -50,7 +50,7 @@ A `run` / `exec` registry entry has no `SKILL.md`. Do not attach skill-frontmatt
 | # | Decision | Rationale |
 |---|----------|-----------|
 | 1 | Opt-in marker is YAML frontmatter `metadata.supersuit.outcomes` (non-empty list of non-empty strings). | Extra keys at the top level can collide with harness frontmatter. `metadata` is the reserved pocket. No marker → not a catalog skill. |
-| 2 | Frontmatter must not contain `to`, `transitions`, or a graph. | Skills emit outcomes; the map / overlay picks `to`. |
+| 2 | `to` is allowed **only** inside `metadata.supersuit.next` values. No `transitions:` list on the skill. No graph of other skills’ edges. | Narrowed by [skill-default hops](2026-08-23-skill-default-hops-design.md) Decision #5. Per-`(from, on)` merge removed the replace-by-`from` reason for a total forbid. |
 | 3 | Logical id is frontmatter `name` if present, else the parent directory name. Do not invent a new id scheme. Harness Skill-tool invocation uses the directory name. Authors SHOULD keep `name` equal to the directory name. | Matches how harnesses label the skill. If `name` and the directory diverge, overlays can target the logical id while the Skill tool only finds the directory. |
 | 4 | Unmapped `(from, on)` stays `wait`. | Already the rule; catalog does not invent edges. |
 | 5 | Discovery is path-based. First-seen logical id wins. User/project workflow remaps still override registry entries. | No harness API required for the first cut. |
@@ -90,7 +90,7 @@ A file is a **candidate** when discovery selected it as a `SKILL.md` under a sca
 
 Optional later: a strict mode MAY treat an invalid marker as a resolve error (fail closed). Default v1 does not enable that. Implementers must not make global fail-closed the v1 default.
 
-Bundled Supersuit skills may grow the same marker in a later implementation PR so the catalog is one mechanism. That is not required to land discovery for foreign skills.
+Bundled Superpowers pipeline skills now carry the same marker plus optional `next` — see [skill-default hops](2026-08-23-skill-default-hops-design.md). Other bundled skills stay description-triggered and are not required in resolved `skills`.
 
 ## Identity (logical id vs invocation)
 
@@ -192,11 +192,11 @@ Validation: `to` must still be a known logical id, `null`, or `wait`. Cataloged 
 - A skill without the marker in those dirs does not appear (unless it is already a bundled / overlay id).
 - A candidate `SKILL.md` with a malformed or invalid `metadata.supersuit.outcomes` is skipped (warned, not cataloged). Resolve **continues**. Default v1 does **not** raise a global `WorkflowResolveError` for that file.
 - Overlay `{ skill: other-name }` with no `path` attaches `outcomes` from the aliased skill when that skill is cataloged with a valid marker; otherwise omits `outcomes`.
-- No new transitions unless an overlay added them. Emitting an undeclared or unmapped outcome is `wait`.
+- Overlays and skill-default `next` may add transitions. Emitting an undeclared or unmapped outcome is `wait`.
 - SessionStart payload does not contain that skill’s body.
 - Resolve does not read `.supersuit/skills` unless someone put that path on `SUPERSUIT_SKILL_PATH`.
 - Project-root `skills/` is not scanned unless listed on `SUPERSUIT_SKILL_PATH`.
-- `workflows/default.yaml` stays ungated and free of `run` keys.
+- Capability overlays stay in `workflows/overlays/*.yaml`. Cataloged identity skills have no `run` keys.
 
 ## Alternatives considered
 
