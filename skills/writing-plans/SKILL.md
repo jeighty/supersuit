@@ -1,6 +1,14 @@
 ---
 name: writing-plans
 description: Use when you have a spec or requirements for a multi-step task, before touching code
+metadata:
+  supersuit:
+    outcomes:
+      - subagent-driven
+      - inline
+    next:
+      subagent-driven: subagent-driven-development
+      inline: executing-plans
 ---
 
 # Writing Plans

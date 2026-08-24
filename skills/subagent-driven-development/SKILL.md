@@ -1,6 +1,12 @@
 ---
 name: subagent-driven-development
 description: Use when executing implementation plans with independent tasks in the current session
+metadata:
+  supersuit:
+    outcomes:
+      - complete
+    next:
+      complete: finishing-a-development-branch
 ---
 
 # Subagent-Driven Development

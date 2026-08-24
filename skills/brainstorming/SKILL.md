@@ -1,6 +1,16 @@
 ---
 name: brainstorming
 description: "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation."
+metadata:
+  supersuit:
+    outcomes:
+      - approved-architectural
+      - approved-bounded
+      - approved-spike
+    next:
+      approved-architectural: writing-plans
+      approved-bounded: null
+      approved-spike: null
 ---
 
 # Brainstorming Ideas Into Designs

@@ -115,14 +115,13 @@ else
   fail "transitions replace per (from, on)"
 fi
 
-echo "=== default.yaml encodes core handoffs ==="
-if python3 - "$REPO_ROOT" <<'PY'
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
-from workflow_yaml import load_yaml
-doc = load_yaml((Path(sys.argv[1]) / "workflows" / "default.yaml").read_text())
-pairs = {(t["from"], t["on"], t["to"]) for t in doc["transitions"]}
+echo "=== bundled hops come from cataloged SKILL.md next ==="
+mkdir -p "$TEST_ROOT/empty-proj"
+if OUT="$("$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" --project-root "$TEST_ROOT/empty-proj" --user-home "$TEST_HOME" --bundled-only)" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+pairs={(t["from"], t["on"], t["to"]) for t in d["transitions"]}
 assert ("brainstorming", "approved-architectural", "writing-plans") in pairs
 assert ("brainstorming", "approved-bounded", None) in pairs
 assert ("brainstorming", "approved-spike", None) in pairs
@@ -130,12 +129,25 @@ assert ("writing-plans", "subagent-driven", "subagent-driven-development") in pa
 assert ("writing-plans", "inline", "executing-plans") in pairs
 assert ("subagent-driven-development", "complete", "finishing-a-development-branch") in pairs
 assert ("executing-plans", "complete", "finishing-a-development-branch") in pairs
-print("ok")
-PY
-then
-  pass "default handoffs"
+assert "entries" not in d
+assert "test-driven-development" not in d["skills"]
+assert "next" not in d["skills"].get("brainstorming", {})
+'; then
+  pass "bundled hops come from cataloged SKILL.md next"
 else
-  fail "default handoffs"
+  fail "bundled hops come from cataloged SKILL.md next"
+fi
+
+echo "=== leftover default.yaml is not read ==="
+POISON="$TEST_ROOT/poison-plugin"
+mkdir -p "$POISON"
+cp -a "$REPO_ROOT/scripts" "$REPO_ROOT/skills" "$REPO_ROOT/workflows" "$POISON/"
+printf '%s\n' 'version: "must-not-read"' > "$POISON/workflows/default.yaml"
+if OUT="$("$POISON/scripts/resolve-workflow" --plugin-root "$POISON" --project-root "$TEST_ROOT/empty-proj" --user-home "$TEST_HOME" --bundled-only)" &&
+  echo "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["version"]==1; assert any(t["from"]=="brainstorming" for t in d["transitions"])'; then
+  pass "leftover default.yaml is not read"
+else
+  fail "leftover default.yaml is not read"
 fi
 
 echo "=== merge rejects transition missing from ==="
@@ -463,22 +475,34 @@ else
   fi
 fi
 
-echo "=== default.yaml has no run actions ==="
+echo "=== default.yaml is gone and cataloged identity skills have no run ==="
 if python3 - "$REPO_ROOT" <<'PY'
-import sys
+import json, subprocess, sys
 from pathlib import Path
-sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
-from workflow_yaml import load_yaml
-doc = load_yaml((Path(sys.argv[1]) / "workflows" / "default.yaml").read_text())
-for skill_id, entry in (doc.get("skills") or {}).items():
-    assert isinstance(entry, dict)
+root = Path(sys.argv[1])
+assert not (root / "workflows" / "default.yaml").exists()
+out = subprocess.check_output(
+    [
+        str(root / "scripts" / "resolve-workflow"),
+        "--plugin-root", str(root),
+        "--project-root", str(root),
+        "--user-home", str(Path(sys.argv[1])),
+        "--bundled-only",
+    ],
+    text=True,
+)
+d = json.loads(out)
+for skill_id in ("brainstorming", "writing-plans", "subagent-driven-development", "executing-plans"):
+    entry = d["skills"][skill_id]
     assert "run" not in entry and "exec" not in entry, skill_id
+    assert "when" not in entry, skill_id
+    assert "next" not in entry, skill_id
 print("ok")
 PY
 then
-  pass "default.yaml has no run actions"
+  pass "default.yaml is gone and cataloged identity skills have no run"
 else
-  fail "default.yaml has no run actions"
+  fail "default.yaml is gone and cataloged identity skills have no run"
 fi
 
 echo "=== run-workflow-action complete/failed ==="
@@ -674,24 +698,17 @@ else
   fail "CLI still reads user ~/.superpowers fallback"
 fi
 
-echo "=== default.yaml has no capability gates ==="
-if python3 - "$REPO_ROOT" <<'PY'
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
-from workflow_yaml import load_yaml
-doc = load_yaml((Path(sys.argv[1]) / "workflows" / "default.yaml").read_text())
-for skill_id, entry in (doc.get("skills") or {}).items():
-    assert isinstance(entry, dict)
-    assert "when" not in entry, skill_id
-for transition in doc.get("transitions") or []:
-    assert "when" not in transition, transition
-print("ok")
-PY
-then
-  pass "default.yaml has no capability gates"
+echo "=== bundled-only emitted transitions have no when ==="
+if OUT="$("$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" --project-root "$TEST_ROOT/empty-proj" --user-home "$TEST_HOME" --bundled-only)" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for t in d["transitions"]:
+    assert "when" not in t, t
+'; then
+  pass "bundled-only emitted transitions have no when"
 else
-  fail "default.yaml has no capability gates"
+  fail "bundled-only emitted transitions have no when"
 fi
 
 echo "=== gated overlay transitions append without replace-by-from ==="

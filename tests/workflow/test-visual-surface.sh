@@ -339,7 +339,7 @@ if OUT="$(cd "$TWO" && env -u SUPERPOWERS_CAPABILITIES CURSOR_PLUGIN_ROOT="$REPO
   fail "two-call without forwarding does not invent native-canvas"
   echo "$OUT" | sed 's/^/    /'
 else
-  if grep -qi 'not a run/exec action' "$TEST_ROOT/err-nofwd.txt"; then
+  if grep -qi 'unknown logical id' "$TEST_ROOT/err-nofwd.txt"; then
     pass "two-call without forwarding does not invent native-canvas"
   else
     fail "two-call without forwarding does not invent native-canvas"
@@ -394,26 +394,33 @@ else
   echo "${OUT:-}" | sed 's/^/    /'
 fi
 
-echo "=== default.yaml stays ungated and free of run actions ==="
+echo "=== default.yaml is gone; cataloged identity skills have no run ==="
 if python3 - "$REPO_ROOT" <<'PY'
-import sys
+import json, subprocess, sys
 from pathlib import Path
-sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
-from workflow_yaml import load_yaml
-doc = load_yaml((Path(sys.argv[1]) / "workflows" / "default.yaml").read_text())
-for skill_id, entry in (doc.get("skills") or {}).items():
-    assert isinstance(entry, dict)
+root = Path(sys.argv[1])
+assert not (root / "workflows" / "default.yaml").exists()
+out = subprocess.check_output(
+    [
+        str(root / "scripts" / "resolve-workflow"),
+        "--plugin-root", str(root),
+        "--project-root", str(root),
+        "--user-home", str(root),
+        "--bundled-only",
+    ],
+    text=True,
+)
+d = json.loads(out)
+for skill_id in ("brainstorming", "writing-plans"):
+    entry = d["skills"][skill_id]
     assert "run" not in entry and "exec" not in entry, skill_id
     assert "when" not in entry, skill_id
-for transition in doc.get("transitions") or []:
-    assert "when" not in transition, transition
-    assert "run" not in transition
 print("ok")
 PY
 then
-  pass "default.yaml stays ungated and free of run actions"
+  pass "default.yaml is gone; cataloged identity skills have no run"
 else
-  fail "default.yaml stays ungated and free of run actions"
+  fail "default.yaml is gone; cataloged identity skills have no run"
 fi
 
 echo "=== brainstorming policy stays product-agnostic ==="
