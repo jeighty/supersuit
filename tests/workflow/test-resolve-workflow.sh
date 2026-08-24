@@ -1613,6 +1613,59 @@ else
   fail "run entries do not get skill-frontmatter outcomes"
 fi
 
+echo "=== parse_skill_next helpers ==="
+if python3 - "$REPO_ROOT" <<'PY'
+import io
+import sys
+from contextlib import redirect_stderr
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "lib"))
+from workflow_resolve import extract_skill_frontmatter, parse_skill_next
+
+outcomes = ["approved-architectural", "approved-bounded", "approved-spike"]
+
+fm = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    outcomes:\n"
+    "      - approved-architectural\n      - approved-bounded\n"
+    "      - approved-spike\n    next:\n"
+    "      approved-architectural: writing-plans\n"
+    "      approved-bounded: null\n      approved-spike: null\n"
+    "      typo-outcome: writing-plans\n    extra: 1\n"
+    "to: should-not-count\ntransitions:\n  - from: other\n---\n"
+)
+err = io.StringIO()
+with redirect_stderr(err):
+    hops = parse_skill_next(fm, outcomes, source="fixture.md")
+assert hops == {
+    "approved-architectural": "writing-plans",
+    "approved-bounded": None,
+    "approved-spike": None,
+}
+assert "typo-outcome" not in hops
+assert "skipping next hop 'typo-outcome' (not in outcomes)" in err.getvalue()
+assert "fixture.md" in err.getvalue()
+
+fm_bad = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    outcomes:\n      - done\n    next: yes\n---\n"
+)
+err = io.StringIO()
+with redirect_stderr(err):
+    hops = parse_skill_next(fm_bad, ["done"], source="bad.md")
+assert hops == {}
+assert "ignoring metadata.supersuit.next (not a mapping)" in err.getvalue()
+
+fm_none = extract_skill_frontmatter(
+    "---\nmetadata:\n  supersuit:\n    outcomes:\n      - done\n---\n"
+)
+assert parse_skill_next(fm_none, ["done"]) == {}
+print("ok")
+PY
+then
+  pass "parse_skill_next helpers"
+else
+  fail "parse_skill_next helpers"
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAILED: $FAILURES"
   exit 1

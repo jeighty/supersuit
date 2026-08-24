@@ -300,6 +300,46 @@ def classify_skill_marker(
     return "ok", outcomes
 
 
+def parse_skill_next(
+    frontmatter: dict[str, Any] | None,
+    outcomes: list[str],
+    *,
+    source: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return filtered skill-default hops from metadata.supersuit.next.
+
+    Extra keys warn and are skipped. A non-mapping ``next`` warns and is
+    ignored. Unknown ``to`` values are kept so validate_workflow can raise.
+    """
+    if not isinstance(frontmatter, dict):
+        return {}
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    supersuit = metadata.get("supersuit")
+    if not isinstance(supersuit, dict) or "next" not in supersuit:
+        return {}
+    raw = supersuit.get("next")
+    label = f": {source}" if source is not None else ""
+    if not isinstance(raw, dict):
+        print(
+            f"warning: ignoring metadata.supersuit.next (not a mapping){label}",
+            file=sys.stderr,
+        )
+        return {}
+    allowed = set(outcomes)
+    hops: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key not in allowed:
+            print(
+                f"warning: skipping next hop {key!r} (not in outcomes){label}",
+                file=sys.stderr,
+            )
+            continue
+        hops[key] = value
+    return hops
+
+
 def skill_logical_id(
     frontmatter: dict[str, Any] | None, skill_dir: Path
 ) -> str:
