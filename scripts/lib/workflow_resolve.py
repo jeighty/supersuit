@@ -1071,7 +1071,7 @@ def winning_skill_next(
     project_root: Path,
 ) -> dict[str, Any] | None:
     """Return next hops from the winning SKILL.md, or None for run/exec."""
-    if "run" in entry:
+    if "run" in entry or "exec" in entry:
         return None
     if "path" in entry:
         path_value = entry.get("path")
@@ -1124,7 +1124,7 @@ def attach_catalog_outcomes(
     for skill_id, entry in list(skills.items()):
         if not isinstance(entry, dict):
             continue
-        if "run" in entry:
+        if "run" in entry or "exec" in entry:
             continue
         if "path" in entry:
             path_value = entry.get("path")

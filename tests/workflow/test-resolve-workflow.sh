@@ -1628,6 +1628,64 @@ else
   fail "run entries do not get skill-frontmatter outcomes"
 fi
 
+echo "=== exec remap of a cataloged skill contributes no next hops ==="
+EXEC_HOP="$TEST_ROOT/exec-no-hops"
+mkdir -p "$EXEC_HOP/proj/.supersuit" "$EXEC_HOP/proj/scripts" "$EXEC_HOP/home" \
+  "$EXEC_HOP/pack/exec-review"
+cat > "$EXEC_HOP/proj/scripts/ensure-fixture.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$EXEC_HOP/proj/scripts/ensure-fixture.sh"
+cat > "$EXEC_HOP/pack/exec-review/SKILL.md" <<'EOF'
+---
+name: exec-review
+metadata:
+  supersuit:
+    outcomes:
+      - approved
+      - skip
+    next:
+      approved: finishing-a-development-branch
+      skip: null
+---
+should not attach hops
+EOF
+cat > "$EXEC_HOP/proj/.supersuit/workflow.yaml" <<'EOF'
+version: 1
+skills:
+  exec-review:
+    exec:
+      argv:
+        - scripts/ensure-fixture.sh
+      allow:
+        - project
+EOF
+if OUT="$(cd "$EXEC_HOP/proj" && SUPERSUIT_SKILL_PATH="$EXEC_HOP/pack" \
+  "$REPO_ROOT/scripts/resolve-workflow" --plugin-root "$REPO_ROOT" \
+  --project-root "$EXEC_HOP/proj" --user-home "$EXEC_HOP/home")" &&
+  echo "$OUT" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+e=d["skills"]["exec-review"]
+assert "run" in e
+assert "exec" not in e
+assert e.get("outcomes") != ["approved", "skip"]
+assert e["run"]["outcomes"]["0"]=="complete"
+assert not any(
+    t.get("from")=="exec-review" and t.get("on")=="approved"
+    for t in d["transitions"]
+), d["transitions"]
+assert not any(
+    t.get("from")=="exec-review" and t.get("on")=="skip"
+    for t in d["transitions"]
+), d["transitions"]
+'; then
+  pass "exec remap of a cataloged skill contributes no next hops"
+else
+  fail "exec remap of a cataloged skill contributes no next hops"
+fi
+
 echo "=== parse_skill_next helpers ==="
 if python3 - "$REPO_ROOT" <<'PY'
 import io
