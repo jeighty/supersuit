@@ -13,6 +13,7 @@ Config layers live under **`.supersuit/`** (canonical). Leftover `.superpowers/`
 - [Exec-hook host auto-path](superpowers/specs/2026-08-22-exec-hook-auto-path-design.md)
 - [Skill outcome catalog](superpowers/specs/2026-08-23-skill-outcome-catalog-design.md)
 - [Skill-default hops](superpowers/specs/2026-08-23-skill-default-hops-design.md)
+- [Grok Bot harness](superpowers/specs/2026-09-08-grok-bot-harness-design.md)
 
 ## Layer precedence
 
@@ -187,11 +188,19 @@ SessionStart passes `--detect-capabilities` and honors `SUPERPOWERS_CAPABILITIES
 |-------|---------|----------------|
 | `session-inject` | Host injects bootstrap / workflow map at session start. | Yes, when `CURSOR_PLUGIN_ROOT`, `CLAUDE_PLUGIN_ROOT`, or `COPILOT_CLI` is set (SessionStart-like env). |
 | `native-worktree` | Host owns worktree / workspace creation. | No. Advertise explicitly. Product name is not evidence. See [Advertising `native-worktree`](#advertising-native-worktree). |
-| `subagents` | Host supports subagent dispatch. | No. Advertise explicitly. |
+| `subagents` | Task-nest fact is true: nested Task / subagent tool **and** the child can load that slot’s `SKILL.md` (`task_tool && skills_loadable`). A Task tool whose children cannot load skills is **not** this token. | No. Advertise only after that probe. |
 | `exec-hook` | Host can run deterministic workflow actions without the chat model mediating. | No. SessionStart running is not the same as an exec hook. See [Advertising `exec-hook`](#advertising-exec-hook). |
 | `native-canvas` | Host provides a native visual surface (e.g. Cursor Canvas). | No. Do not infer from `CURSOR_PLUGIN_ROOT`. See [Advertising `native-canvas`](#advertising-native-canvas). |
 
 A missing capability probe (no hook env, no env override, no `--capabilities`) yields an empty set. Gated overlays do not apply. That is intentional: fail toward the Superpowers baseline rather than claiming Canvas, worktrees, subagents, or exec hooks from a product name.
+
+Typical Grok Bot CloudAgent-workspace advertise (tokens, not a product-name
+detect): `session-inject,native-worktree`. Add `subagents` only when children
+can load slot skills.
+
+```bash
+export SUPERPOWERS_CAPABILITIES=session-inject,native-worktree
+```
 
 ## Advertising `native-worktree`
 
