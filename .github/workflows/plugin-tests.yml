@@ -21,6 +21,7 @@ jobs:
           /bin/bash tests/workflow/test-resolve-workflow.sh
           /bin/bash tests/workflow/test-skill-handoff-lint.sh
           /bin/bash tests/workflow/test-native-worktree.sh
+          /bin/bash tests/grok-bot/test-grok-bot-tools.sh
           /bin/bash tests/workflow/test-visual-surface.sh
           /bin/bash tests/workflow/test-exec-hook.sh
           /bin/bash tests/hooks/test-session-start.sh
