@@ -333,6 +333,40 @@ else
   fail "default.yaml is gone; cataloged identity skills have no run"
 fi
 
+echo "=== session-inject,native-worktree remaps worktree handshake ==="
+if OUT="$(cd "$REPO_ROOT" && env -u SUPERPOWERS_CAPABILITIES -u CURSOR_PLUGIN_ROOT -u CLAUDE_PLUGIN_ROOT -u COPILOT_CLI \
+  "${RESOLVE[@]}" --project-root "$REPO_ROOT" --user-home "$TEST_HOME" \
+  --capabilities session-inject,native-worktree --bundled-only)"; then
+  write_json "$OUT"
+  if python3 - "$JSON_FILE" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert "session-inject" in d["capabilities"]
+assert "native-worktree" in d["capabilities"]
+assert "subagents" not in d["capabilities"]
+assert "run" in d["skills"]["ensure-worktree"]
+assert d["skills"]["ensure-worktree"]["run"]["argv"][0].endswith("ensure-worktree")
+assert "run" in d["skills"]["using-git-worktrees"]
+assert d["skills"]["using-git-worktrees"]["run"]["argv"][0].endswith("ensure-worktree")
+arch = [x for x in d["transitions"] if x["from"] == "brainstorming" and x["on"] == "approved-architectural"][0]
+assert arch["to"] == "ensure-worktree", arch
+PY
+  then
+    pass "session-inject,native-worktree remaps worktree handshake"
+  else
+    fail "session-inject,native-worktree remaps worktree handshake"
+  fi
+else
+  fail "session-inject,native-worktree remaps worktree handshake"
+fi
+
+echo "=== ensure-worktree source is host-agnostic (no CloudAgent) ==="
+if grep -F 'CloudAgent' "$REPO_ROOT/scripts/ensure-worktree"; then
+  fail "ensure-worktree source hardcodes CloudAgent"
+else
+  pass "ensure-worktree source has no CloudAgent"
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAILED: $FAILURES"
   exit 1

@@ -845,6 +845,13 @@ assert "native-canvas" not in claimed
 assert "native-worktree" not in claimed
 assert "subagents" not in claimed
 assert "exec-hook" not in claimed
+assert detect_capabilities({"GROK": "1"}) == []
+assert detect_capabilities({"GROK_BOT": "1"}) == []
+assert detect_capabilities({"XAI": "1"}) == []
+assert detect_capabilities({"GROK": "1", "GROK_BOT": "yes", "XAI": "true"}) == []
+src = Path(sys.argv[1], "scripts", "lib", "workflow_resolve.py").read_text()
+for token in ("GROK", "GROK_BOT", "XAI"):
+    assert token not in src, token
 print("ok")
 PY
 then
