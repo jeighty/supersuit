@@ -61,9 +61,24 @@ if grep -E '\b(GROK|GROK_BOT|XAI)\b' "$DETECT"; then
   fail "detect_capabilities source contains product-name tokens GROK/GROK_BOT/XAI"
 fi
 
-# Handshake stays host-agnostic
+# Handshake stays host-agnostic; the ref names CloudAgent as this host's workspace
 if grep -F 'CloudAgent' "$ENSURE"; then
   fail "ensure-worktree must not hardcode CloudAgent"
+fi
+grep -q 'host-owned CloudAgent workspace' "$MAPPING" \
+  || fail "harness ref must treat handshake complete as host-owned CloudAgent workspace"
+grep -q 'Do not invent `git worktree add` after the `native-worktree` remap' "$MAPPING" \
+  || fail "harness ref must forbid inventing git worktree add after native-worktree remap"
+
+# Pack / cloud-seat are review-family only — not a general SDD pack menu
+grep -q 'review-family only' "$MAPPING" \
+  || fail "Pack row must be scoped to review-family only"
+grep -q 'When running the review family' "$MAPPING" \
+  || fail "cloud-seat must be scoped to the review family"
+grep -qE 'thinner set / thinner review pack|thinner review pack' "$MAPPING" \
+  || fail "partial-return must not name a general SDD pack menu"
+if grep -qE '\| Pack \| Caller-named' "$MAPPING"; then
+  fail "Pack row is unscoped (SDD would hunt a pack menu)"
 fi
 
 # workflow-config links the design spec and tightens subagents

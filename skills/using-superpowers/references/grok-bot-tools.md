@@ -55,10 +55,7 @@ Repo work on this host is a **CloudAgent branch / PR**, not a box checkout.
 - When `native-worktree` is advertised, `using-git-worktrees` and
   `ensure-worktree` are `run` actions (`scripts/ensure-worktree`). Do not load
   the worktree skill and do not invent `git worktree` steps.
-- The handshake reports isolation if present, otherwise reports host-owned
-  workspace, always `complete` unless the process errors. It never runs
-  `git worktree add`. The script is host-agnostic; this ref names `CloudAgent`
-  as Grok Bot's workspace primitive.
+- Treat handshake outcome `complete` on this host as **host-owned CloudAgent workspace**. Do not invent `git worktree add` after the `native-worktree` remap. The script itself stays host-agnostic (no `CloudAgent` string in `scripts/ensure-worktree`).
 - Box clone is forbidden. Do not clone the repo onto the box to get a worktree.
 - Do not advertise `native-worktree` from CloudAgent **tip** access alone. Tip
   access is a spawn primitive, not workspace ownership of this session.
@@ -78,12 +75,12 @@ cannot load skills is not `subagents`.
 | `Task` exists but skills unloadable / `subagents` not advertised | CloudAgent fan (one agent per seat) or stop. Never nest into unloadable children. |
 | No CloudAgent launch either | Stop. Name the missing primitive. Do not review inline. |
 | One agent per seat | Never one CloudAgent doing every seat in one window. Never nested seats that lack `Task`. |
-| Partial return | A subset of dumps from **one** spawn call is a whole-call stop. Do not merge seats that did return. Do not re-announce a thinner pack. |
-| Pack | Caller-named `full` / `core` (default `full`). Do not infer `core` from "Medium", "quick", "light", "small", or a missing `Task` tool. |
+| Partial return | A subset of dumps from **one** spawn call is a whole-call stop. Do not merge seats that did return. Do not re-announce a thinner set / thinner review pack. |
+| Pack | When running a review pack (review-family only): caller-named `full` / `core` (default `full`). Do not infer `core` from "Medium", "quick", "light", "small", or a missing `Task` tool. |
 
-SDD and `dispatching-parallel-agents` use this same binding; do not rewrite
-those skill bodies. `cloud-seat` is an invocation mode of the same router, not
-a sibling skill.
+SDD and `dispatching-parallel-agents` use this same spawn binding; do not
+rewrite those skill bodies. When running the review family, `cloud-seat` is
+an invocation mode of the same router, not a sibling skill.
 
 ## Finishing
 
